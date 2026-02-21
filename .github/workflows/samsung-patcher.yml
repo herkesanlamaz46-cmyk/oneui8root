@@ -146,4 +146,5 @@ jobs:
           name: Samsung-Patched-Firmware-Magisk26.3
           path: |
             Patched_BL.tar            Patched_AP.tar
-          retention-days: 7
+          # ⬇️ DEĞİŞİKLİK BURADA: 1 gün (24 saat) sonra otomatik silinir
+          retention-days: 1
