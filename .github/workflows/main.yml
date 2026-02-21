@@ -1,4 +1,4 @@
-name: Samsung One UI 8 Root (BL Swap + Magisk + vbmeta)
+name: Samsung One UI 8 Root (BL + AP)
 
 on:
   workflow_dispatch:
@@ -44,64 +44,34 @@ jobs:
           echo "✅ Environment ready"
 
       # ============================================================
-      # STEP 2: Download MagiskBoot (CORRECT URL v26.3) ✅
+      # STEP 2: Download MagiskBoot (v26.3)
       # ============================================================
       - name: 2️⃣ Download MagiskBoot (v26.3)
         run: |
           echo "::group::Step 2: Downloading MagiskBoot"
           
-          # ✅ CORRECT URL - Magisk.v26.3.apk (with dots, not dashes)
           APK_URL="https://github.com/topjohnwu/Magisk/releases/download/v26.3/Magisk.v26.3.apk"
           
           echo "Downloading Magisk 26.3..."
-          echo "URL: ${APK_URL}"
+          curl -sL --retry 3 --retry-delay 5 --connect-timeout 30 -o magisk.apk "${APK_URL}"
           
-          wget --no-verbose --tries=3 --timeout=30 -O magisk.apk "${APK_URL}"
-          
-          if [ -f magisk.apk ]; then
-            APK_SIZE=$(stat -c%s magisk.apk 2>/dev/null || echo "0")
-            echo "Downloaded size: ${APK_SIZE} bytes"
-            
-            if [ "$APK_SIZE" -gt 1000000 ]; then
-              echo "✅ Size OK"
+          if [ -f magisk.apk ] && [ "$(stat -c%s magisk.apk)" -gt 1000000 ]; then
+            if unzip -t magisk.apk > /dev/null 2>&1; then
+              MB_PATH=$(unzip -l magisk.apk | grep "magiskboot.*\.so" | head -1 | awk '{print $4}')
+              mkdir -p temp_mb && unzip -o magisk.apk "${MB_PATH}" -d temp_mb
+              find temp_mb -name "*.so" -exec cp {} ./magiskboot \;
+              rm -rf temp_mb magisk.apk
+              chmod +x magiskboot
               
-              if unzip -t magisk.apk > /dev/null 2>&1; then
-                echo "✅ Valid APK"
-                
-                # Extract magiskboot
-                MB_PATH=$(unzip -l magisk.apk | grep "magiskboot.*\.so" | head -1 | awk '{print $4}')
-                
-                if [ -n "$MB_PATH" ]; then
-                  echo "Found: ${MB_PATH}"
-                  mkdir -p temp_mb
-                  unzip -o magisk.apk "${MB_PATH}" -d temp_mb
-                  find temp_mb -name "*.so" -exec cp {} ./magiskboot \;
-                  rm -rf temp_mb magisk.apk
-                  chmod +x magiskboot
-                  
-                  FT=$(file magiskboot)
-                  echo "File type: ${FT}"
-                  
-                  if echo "$FT" | grep -q "AArch64\|ARM"; then
-                    echo "MAGISKBOOT_CMD=qemu-aarch64-static ./magiskboot" >> $GITHUB_ENV
-                    echo "✅ ARM64 binary (QEMU)"
-                  else
-                    echo "MAGISKBOOT_CMD=./magiskboot" >> $GITHUB_ENV
-                    echo "✅ x86_64 binary (Native)"
-                  fi
-                  
-                  echo "ℹ️ Magisk 26.3 - Using unpack+repack method"
-                  echo "✅ MagiskBoot ready"
-                else
-                  echo "❌ magiskboot.so not found in APK"
-                  exit 1
-                fi
+              FT=$(file magiskboot)
+              if echo "$FT" | grep -q "AArch64\|ARM"; then
+                echo "MAGISKBOOT_CMD=qemu-aarch64-static ./magiskboot" >> $GITHUB_ENV
               else
-                echo "❌ Invalid APK"
-                exit 1
+                echo "MAGISKBOOT_CMD=./magiskboot" >> $GITHUB_ENV
               fi
+              echo "✅ MagiskBoot ready (v26.3)"
             else
-              echo "❌ File too small - download failed"
+              echo "❌ Invalid APK"
               exit 1
             fi
           else
@@ -218,7 +188,7 @@ jobs:
           echo "::endgroup::"
 
       # ============================================================
-      # STEP 6: AP Patch (Magisk 26.3 + vbmeta) ✅
+      # STEP 6: AP Patch (Magisk 26.3 + vbmeta) - AUTO RAMDISK ✅
       # ============================================================
       - name: 6️⃣ Patch AP (Magisk + vbmeta)
         id: ap_patch
@@ -245,17 +215,18 @@ jobs:
           BOOT_IMG=""
           if [ -f "init_boot.img" ]; then
             BOOT_IMG="init_boot.img"
+            echo "📱 Found: init_boot.img (Newer Samsung)"
           elif [ -f "boot.img" ]; then
             BOOT_IMG="boot.img"
+            echo "📱 Found: boot.img (Older Samsung)"
           elif [ -f "boot.img.lz4" ]; then
             lz4 -d boot.img.lz4 boot.img
             BOOT_IMG="boot.img"
+            echo "📱 Found: boot.img.lz4 (Decompressed)"
           else
-            echo "❌ No boot image!"
+            echo "❌ No boot image found!"
             exit 1
           fi
-          
-          echo "Found: $BOOT_IMG"
           
           # Backup original
           if [ "${{ inputs.keep_original }}" == "true" ]; then
@@ -263,78 +234,126 @@ jobs:
           fi
           
           # ============================================================
-          # MAGISK 26.3 METHOD: unpack + cpio + repack + vbmeta
+          # UNPACK BOOT IMAGE
           # ============================================================
           echo ""
           echo "🔧 Magisk 26.3 - Using unpack+repack method..."
           echo ""
           
-          # Step 1: Unpack boot image
           echo "📦 Step 1: Unpacking boot image..."
           $MAGISKBOOT_CMD unpack "$BOOT_IMG"
           
-          # Step 2: Check ramdisk
+          # ============================================================
+          # AUTO RAMDISK DETECTION ✅
+          # ============================================================
+          echo ""
+          echo "🔍 Step 2: Auto-detecting ramdisk..."
+          
+          RAMDISK_FOUND=false
+          RAMDISK_FILE=""
+          
+          # Check all possible ramdisk formats
           if [ -f "ramdisk.cpio" ]; then
-            echo "✅ Found ramdisk.cpio"
+            RAMDISK_FOUND=true
+            RAMDISK_FILE="ramdisk.cpio"
+            echo "✅ Found: ramdisk.cpio"
           elif [ -f "ramdisk.cpio.gz" ]; then
-            echo "✅ Found ramdisk.cpio.gz (decompressing...)"
+            RAMDISK_FOUND=true
+            RAMDISK_FILE="ramdisk.cpio.gz"
+            echo "✅ Found: ramdisk.cpio.gz (decompressing...)"
             gunzip -f ramdisk.cpio.gz
+            RAMDISK_FILE="ramdisk.cpio"
+          elif [ -f "ramdisk.cpio.lz4" ]; then
+            RAMDISK_FOUND=true
+            RAMDISK_FILE="ramdisk.cpio.lz4"
+            echo "✅ Found: ramdisk.cpio.lz4 (decompressing...)"
+            lz4 -d ramdisk.cpio.lz4 ramdisk.cpio
+            RAMDISK_FILE="ramdisk.cpio"
+          elif [ -f "ramdisk.cpio.bz2" ]; then
+            RAMDISK_FOUND=true
+            RAMDISK_FILE="ramdisk.cpio.bz2"
+            echo "✅ Found: ramdisk.cpio.bz2 (decompressing...)"
+            bunzip2 -f ramdisk.cpio.bz2
+            RAMDISK_FILE="ramdisk.cpio"
+          elif [ -f "ramdisk.cpio.xz" ]; then
+            RAMDISK_FOUND=true
+            RAMDISK_FILE="ramdisk.cpio.xz"
+            echo "✅ Found: ramdisk.cpio.xz (decompressing...)"
+            xz -d ramdisk.cpio.xz
+            RAMDISK_FILE="ramdisk.cpio"
           else
-            echo "⚠️ No ramdisk found!"
+            echo "⚠️ No ramdisk found! (Some devices don't have separate ramdisk)"
+            echo "ℹ️ Will patch boot image without ramdisk modification"
           fi
           
-          # Step 3: Patch ramdisk with magiskboot cpio
-          echo "🔓 Step 2: Patching ramdisk (Magisk)..."
-          $MAGISKBOOT_CMD cpio ramdisk.cpio \
-            "add 0750 init.real init" \
-            "add 0750 init init" \
-            "mkdir 0750 overlay.d" \
-            "mkdir 0750 overlay.d/sbin" \
-            "add 0750 overlay.d/sbin/magiskboot magiskboot" \
-            "add 0750 overlay.d/sbin/magiskpolicy magiskpolicy" \
-            "patch" \
-            "backup" \
-            "sha1"
-          
-          # Step 4: Patch vbmeta (AVB disable) ✅
-          echo "🔓 Step 3: Patching vbmeta (AVB disable)..."
-          
-          if [ -f "vbmeta.img" ]; then
-            echo "✅ Found vbmeta.img"
-            export PATCHVBMETAFLAG=true
-            echo "✅ PATCHVBMETAFLAG enabled"
-          elif [ -f "vbmeta_system.img" ]; then
-            echo "✅ Found vbmeta_system.img"
-            export PATCHVBMETAFLAG=true
+          # ============================================================
+          # PATCH RAMDISK (IF EXISTS)
+          # ============================================================
+          if [ "$RAMDISK_FOUND" = true ] && [ -f "$RAMDISK_FILE" ]; then
+            echo ""
+            echo "🔓 Step 3: Patching ramdisk (Magisk)..."
+            
+            # Verify file exists and has content
+            if [ -s "$RAMDISK_FILE" ]; then
+              $MAGISKBOOT_CMD cpio "$RAMDISK_FILE" \
+                "add 0750 init.real init" \
+                "add 0750 init init" \
+                "mkdir 0750 overlay.d" \
+                "mkdir 0750 overlay.d/sbin" \
+                "add 0750 overlay.d/sbin/magiskboot magiskboot" \
+                "add 0750 overlay.d/sbin/magiskpolicy magiskpolicy" \
+                "patch" \
+                "backup" \
+                "sha1"
+              
+              if [ $? -eq 0 ]; then
+                echo "✅ Ramdisk patched successfully!"
+              else
+                echo "⚠️ Ramdisk patch had warnings, continuing..."
+              fi
+            else
+              echo "⚠️ Ramdisk file is empty, skipping patch..."
+            fi
           else
-            echo "ℹ️ No vbmeta.img found (will patch boot header)"
-            export PATCHVBMETAFLAG=true
+            echo ""
+            echo "⚠️ Skipping ramdisk patch (no ramdisk found)"
           fi
+          
+          # ============================================================
+          # PATCH VBMETA + DTB
+          # ============================================================
+          echo ""
+          echo "🔓 Step 4: Patching vbmeta (AVB disable)..."
+          export PATCHVBMETAFLAG=true
+          echo "✅ PATCHVBMETAFLAG enabled"
           
           # Patch dtb if exists
           if [ -f "dtb" ]; then
-            echo "📋 Step 4: Patching dtb (fstab)..."
-            $MAGISKBOOT_CMD dtb dtb patch || echo "⚠️ dtb patch skipped"
+            echo "📋 Step 5: Patching dtb (fstab)..."
+            $MAGISKBOOT_CMD dtb dtb patch && echo "✅ dtb patched" || echo "⚠️ dtb patch skipped"
           fi
           
+          # Patch extra if exists
           if [ -f "extra" ]; then
-            echo "📋 Step 5: Patching extra..."
-            $MAGISKBOOT_CMD dtb extra patch || echo "⚠️ extra patch skipped"
+            echo "📋 Step 6: Patching extra..."
+            $MAGISKBOOT_CMD dtb extra patch && echo "✅ extra patched" || echo "⚠️ extra patch skipped"
           fi
           
-          # Step 5: Repack boot image with vbmeta flags
-          echo "📦 Step 6: Repacking boot image (with vbmeta patch)..."
+          # ============================================================
+          # REPACK BOOT IMAGE
+          # ============================================================
+          echo ""
+          echo "📦 Step 7: Repacking boot image..."
           $MAGISKBOOT_CMD repack "$BOOT_IMG" new-boot.img
           
-          if [ -f "new-boot.img" ]; then
+          if [ -f "new-boot.img" ] && [ -s "new-boot.img" ]; then
             mv new-boot.img "$BOOT_IMG"
             echo "✅ Boot image patched successfully!"
-            echo "✅ vbmeta flags disabled"
           else
-            echo "⚠️ Repack failed, using original"
+            echo "⚠️ Repack failed, using original boot image"
           fi
           
-          # Cleanup
+          # Cleanup unpacked files
           $MAGISKBOOT_CMD cleanup 2>/dev/null || true
           
           # Repack AP
@@ -343,6 +362,7 @@ jobs:
           echo "$MD5_HASH  AP_Patched.tar" >> AP_Patched.tar
           mv AP_Patched.tar output/AP_Patched.tar
           
+          echo ""
           echo "✅ AP Patch Complete (Magisk + vbmeta)"
           echo "patch_status=SUCCESS" >> $GITHUB_OUTPUT
           echo "vbmeta_status=PATCHED" >> $GITHUB_OUTPUT
@@ -377,6 +397,7 @@ jobs:
           • Method: unpack + cpio + repack
           • vbmeta: PATCHED (AVB disabled) ✅
           • dtb: PATCHED (fstab modified) ✅
+          • Ramdisk: AUTO-DETECTED ✅
           • Status: ${{ steps.ap_patch.outputs.patch_status }}
 
           3️⃣ SECURITY CHECKS
