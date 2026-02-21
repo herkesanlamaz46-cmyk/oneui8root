@@ -1,1 +1,149 @@
+name: Samsung OneUI BL Swap & Root Patcher (Magisk 26.3)
 
+on:
+  workflow_dispatch:
+    inputs:
+      ui7_bl_url:
+        description: 'OneUI 7 Firmware Direct Download Link (.zip)'
+        required: true
+        example: 'https://example.com/ui7.zip'
+      ui8_full_url:
+        description: 'OneUI 8 Firmware Direct Download Link (.zip)'
+        required: true
+        example: 'https://example.com/ui8.zip'
+      magisk_version:
+        description: 'Magisk Version'
+        required: true
+        default: '26.3'
+        type: choice
+        options:
+          - '26.3'
+
+jobs:
+  patch-firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lz4 unzip wget tar android-sdk-platform-tools-core p7zip-full
+
+      - name: Download Firmwares
+        run: |
+          echo "⬇️ Downloading OneUI 7..."
+          wget --no-check-certificate -O ui7.zip "${{ inputs.ui7_bl_url }}" || { echo "Error: Invalid UI7 Link"; exit 1; }
+          
+          echo "⬇️ Downloading OneUI 8..."
+          wget --no-check-certificate -O ui8.zip "${{ inputs.ui8_full_url }}" || { echo "Error: Invalid UI8 Link"; exit 1; }
+
+      - name: Extract Firmwares
+        run: |
+          mkdir -p ui7 ui8
+          echo "Extracting archives..."
+          unzip -q ui7.zip -d ui7/
+          unzip -q ui8.zip -d ui8/
+          
+          UI7_BL=$(find ui7 -name "BL_*.tar.md5" -o -name "BL_*.tar" | head -n 1)
+          UI8_BL=$(find ui8 -name "BL_*.tar.md5" -o -name "BL_*.tar" | head -n 1)          UI8_AP=$(find ui8 -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n 1)
+
+          if [ -z "$UI7_BL" ] || [ -z "$UI8_BL" ] || [ -z "$UI8_AP" ]; then
+            echo "ERROR: Required BL or AP files not found inside ZIPs."
+            exit 1
+          fi
+
+          echo "UI7_BL=$UI7_BL" >> $GITHUB_ENV
+          echo "UI8_BL=$UI8_BL" >> $GITHUB_ENV
+          echo "UI8_AP=$UI8_AP" >> $GITHUB_ENV
+
+      - name: Step 1 - Patch Bootloader (BL Swap)
+        run: |
+          mkdir -p bl_work ui7_bl_temp
+          
+          echo "🔄 Extracting OneUI 8 BL..."
+          tar -xf "$UI8_BL" -C bl_work/
+          
+          echo "🔄 Extracting OneUI 7 BL..."
+          tar -xf "$UI7_BL" -C ui7_bl_temp/
+          
+          if [ ! -f "ui7_bl_temp/abl.elf.lz4" ]; then
+            echo "ERROR: abl.elf.lz4 not found in OneUI 7 BL!"
+            exit 1
+          fi
+          
+          echo "🛠️ Swapping abl.elf.lz4..."
+          rm -f bl_work/abl.elf.lz4
+          cp ui7_bl_temp/abl.elf.lz4 bl_work/abl.elf.lz4
+          
+          echo "📦 Repacking BL..."
+          cd bl_work
+          tar -cvf ../Patched_BL.tar ./*
+          cd ..
+
+      - name: Step 2 - Prepare Magisk 26.3
+        run: |
+          mkdir -p ap_work magisk_tools
+          
+          echo "📦 Extracting OneUI 8 AP..."
+          tar -xf "$UI8_AP" -C ap_work/
+          
+          BOOT_FILE=$(find ap_work -name "boot.img" -o -name "init_boot.img" | head -n 1)
+          
+          if [ -z "$BOOT_FILE" ]; then
+            echo "ERROR: boot.img or init_boot.img not found in AP!"
+            exit 1
+          fi
+          
+          echo "Found Boot Image: $BOOT_FILE"          echo "BOOT_FILE=$BOOT_FILE" >> $GITHUB_ENV
+
+          echo "⬇️ Downloading MagiskBoot (Linux x64)..."
+          wget -O magisk_tools/magiskboot https://github.com/HuskyDG/magiskboot-builds/releases/download/latest/magiskboot_linux_x86_64
+          chmod +x magisk_tools/magiskboot
+
+      - name: Step 2 - Patch Boot Image
+        run: |
+          mkdir -p patch_dir
+          cd patch_dir
+          
+          cp ../$BOOT_FILE ./boot.img
+          
+          echo "🔨 Unpacking with MagiskBoot..."
+          ../magisk_tools/magiskboot unpack boot.img
+          
+          if [ -f "ramdisk.cpio" ]; then
+            echo "🔨 Patching ramdisk..."
+            ../magisk_tools/magiskboot cpio ramdisk.cpio \
+              "add 0750 init.rc $(curl -s https://raw.githubusercontent.com/topjohnwu/magisk/master/stub/magiskinit.rc)" \
+              "patch" \
+              "backup .sha1"
+          else
+            echo "⚠️ No ramdisk found, skipping cpio patch (might need manual intervention)."
+          fi
+          
+          echo "🔨 Repacking..."
+          ../magisk_tools/magiskboot repack boot.img
+          
+          if [ -f "boot_new.img" ]; then
+            mv boot_new.img ../ap_work/$(basename $BOOT_FILE)
+            echo "✅ Boot image patched successfully."
+          else
+            echo "⚠️ boot_new.img not created. Keeping original."
+          fi
+          cd ..
+
+      - name: Repack AP
+        run: |
+          cd ap_work
+          echo "📦 Repacking AP..."
+          tar -cvf ../Patched_AP.tar ./*
+          cd ..
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: Samsung-Patched-Firmware-Magisk26.3
+          path: |
+            Patched_BL.tar            Patched_AP.tar
+          retention-days: 7
