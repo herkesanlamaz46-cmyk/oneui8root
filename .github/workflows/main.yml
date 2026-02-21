@@ -44,36 +44,64 @@ jobs:
           echo "✅ Environment ready"
 
       # ============================================================
-      # STEP 2: Download MagiskBoot (Magisk 26.3 - FIXED URL) ✅
+      # STEP 2: Download MagiskBoot (CORRECT URL v26.3) ✅
       # ============================================================
       - name: 2️⃣ Download MagiskBoot (v26.3)
         run: |
           echo "::group::Step 2: Downloading MagiskBoot"
           
-          APK_URL="https://github.com/topjohnwu/Magisk/releases/download/v26.3/Magisk-v26.3.apk"
+          # ✅ CORRECT URL - Magisk.v26.3.apk (with dots, not dashes)
+          APK_URL="https://github.com/topjohnwu/Magisk/releases/download/v26.3/Magisk.v26.3.apk"
           
           echo "Downloading Magisk 26.3..."
           echo "URL: ${APK_URL}"
           
           wget --no-verbose --tries=3 --timeout=30 -O magisk.apk "${APK_URL}"
           
-          if [ -f magisk.apk ] && [ "$(stat -c%s magisk.apk)" -gt 1000000 ]; then
-            if unzip -t magisk.apk > /dev/null 2>&1; then
-              MB_PATH=$(unzip -l magisk.apk | grep "magiskboot.*\.so" | head -1 | awk '{print $4}')
-              mkdir -p temp_mb && unzip -o magisk.apk "${MB_PATH}" -d temp_mb
-              find temp_mb -name "*.so" -exec cp {} ./magiskboot \;
-              rm -rf temp_mb magisk.apk
-              chmod +x magiskboot
+          if [ -f magisk.apk ]; then
+            APK_SIZE=$(stat -c%s magisk.apk 2>/dev/null || echo "0")
+            echo "Downloaded size: ${APK_SIZE} bytes"
+            
+            if [ "$APK_SIZE" -gt 1000000 ]; then
+              echo "✅ Size OK"
               
-              FT=$(file magiskboot)
-              if echo "$FT" | grep -q "AArch64\|ARM"; then
-                echo "MAGISKBOOT_CMD=qemu-aarch64-static ./magiskboot" >> $GITHUB_ENV
+              if unzip -t magisk.apk > /dev/null 2>&1; then
+                echo "✅ Valid APK"
+                
+                # Extract magiskboot
+                MB_PATH=$(unzip -l magisk.apk | grep "magiskboot.*\.so" | head -1 | awk '{print $4}')
+                
+                if [ -n "$MB_PATH" ]; then
+                  echo "Found: ${MB_PATH}"
+                  mkdir -p temp_mb
+                  unzip -o magisk.apk "${MB_PATH}" -d temp_mb
+                  find temp_mb -name "*.so" -exec cp {} ./magiskboot \;
+                  rm -rf temp_mb magisk.apk
+                  chmod +x magiskboot
+                  
+                  FT=$(file magiskboot)
+                  echo "File type: ${FT}"
+                  
+                  if echo "$FT" | grep -q "AArch64\|ARM"; then
+                    echo "MAGISKBOOT_CMD=qemu-aarch64-static ./magiskboot" >> $GITHUB_ENV
+                    echo "✅ ARM64 binary (QEMU)"
+                  else
+                    echo "MAGISKBOOT_CMD=./magiskboot" >> $GITHUB_ENV
+                    echo "✅ x86_64 binary (Native)"
+                  fi
+                  
+                  echo "ℹ️ Magisk 26.3 - Using unpack+repack method"
+                  echo "✅ MagiskBoot ready"
+                else
+                  echo "❌ magiskboot.so not found in APK"
+                  exit 1
+                fi
               else
-                echo "MAGISKBOOT_CMD=./magiskboot" >> $GITHUB_ENV
+                echo "❌ Invalid APK"
+                exit 1
               fi
-              echo "✅ MagiskBoot ready (v26.3)"
             else
-              echo "❌ Invalid APK"
+              echo "❌ File too small - download failed"
               exit 1
             fi
           else
@@ -271,10 +299,8 @@ jobs:
           # Step 4: Patch vbmeta (AVB disable) ✅
           echo "🔓 Step 3: Patching vbmeta (AVB disable)..."
           
-          # Check for vbmeta files
           if [ -f "vbmeta.img" ]; then
             echo "✅ Found vbmeta.img"
-            # Patch vbmeta to disable verification
             export PATCHVBMETAFLAG=true
             echo "✅ PATCHVBMETAFLAG enabled"
           elif [ -f "vbmeta_system.img" ]; then
@@ -285,7 +311,7 @@ jobs:
             export PATCHVBMETAFLAG=true
           fi
           
-          # Also patch dtb if exists
+          # Patch dtb if exists
           if [ -f "dtb" ]; then
             echo "📋 Step 4: Patching dtb (fstab)..."
             $MAGISKBOOT_CMD dtb dtb patch || echo "⚠️ dtb patch skipped"
@@ -308,7 +334,7 @@ jobs:
             echo "⚠️ Repack failed, using original"
           fi
           
-          # Cleanup unpacked files
+          # Cleanup
           $MAGISKBOOT_CMD cleanup 2>/dev/null || true
           
           # Repack AP
