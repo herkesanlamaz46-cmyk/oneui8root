@@ -62,9 +62,9 @@ jobs:
           echo "✅ Environment ready"
 
       # ============================================================
-      # STEP 2: Download MagiskBoot (DEBUG MODE) ✅
+      # STEP 2: Download MagiskBoot (FIXED URLS + SIZE CHECK) ✅
       # ============================================================
-      - name: 2️⃣ Download MagiskBoot (Full Debug)
+      - name: 2️⃣ Download MagiskBoot (Fixed)
         run: |
           echo "::group::Step 2: Downloading MagiskBoot"
           
@@ -73,162 +73,154 @@ jobs:
           MAGISKBOOT_CMD="./magiskboot"
           
           echo "========================================="
-          echo "🔍 MAGISKBOOT DOWNLOAD DEBUG MODE"
+          echo "🔍 MAGISKBOOT DOWNLOAD"
           echo "========================================="
-          echo "Requested Magisk Version: v${MAGISK_VER}"
+          echo "Requested Version: v${MAGISK_VER}"
           echo ""
           
-          # ===== SOURCE 1: Official Magisk APK with FULL DEBUG =====
+          # ===== SOURCE 1: Official Magisk APK =====
           echo "📥 SOURCE 1: Official Magisk APK"
           echo "-------------------------------------------"
+          
+          # NO SPACES IN URL!
           APK_URL="https://github.com/topjohnwu/Magisk/releases/download/v${MAGISK_VER}/Magisk-v${MAGISK_VER}.apk"
-          echo "Download URL: $APK_URL"
+          echo "URL: ${APK_URL}"
           
-          curl -sL --retry 3 -o magisk.apk "$APK_URL"
+          # Use wget with redirect follow and show progress
+          wget --no-verbose --tries=3 --timeout=30 -O magisk.apk "${APK_URL}" 2>&1 || echo "Download attempt finished"
           
+          # CHECK FILE SIZE - Must be > 1MB
           if [ -f magisk.apk ]; then
-            APK_SIZE=$(ls -lh magisk.apk | awk '{print $5}')
-            echo "✅ APK downloaded (Size: $APK_SIZE)"
+            APK_SIZE=$(stat -c%s magisk.apk 2>/dev/null || stat -f%z magisk.apk 2>/dev/null || echo "0")
+            APK_SIZE_MB=$((APK_SIZE / 1024 / 1024))
+            echo "Downloaded size: ${APK_SIZE} bytes (${APK_SIZE_MB} MB)"
             
-            # Verify APK is valid
-            echo ""
-            echo "Verifying APK integrity..."
-            if unzip -t magisk.apk > /dev/null 2>&1; then
-              echo "✅ APK is valid ZIP"
-            else
-              echo "❌ APK is CORRUPTED!"
-              rm -f magisk.apk
-            fi
-            
-            # LIST EVERYTHING IN APK
-            echo ""
-            echo "📋 FULL APK CONTENTS (searching for magiskboot):"
-            echo "-------------------------------------------"
-            unzip -l magisk.apk | grep -i "magisk\|lib\|boot" || echo "⚠️ No matching files found!"
-            
-            # LIST ALL .so FILES
-            echo ""
-            echo "📋 ALL .so FILES IN APK:"
-            echo "-------------------------------------------"
-            unzip -l magisk.apk | grep "\.so$" || echo "⚠️ No .so files found!"
-            
-            # FIND ANY MAGISKBOOT FILE
-            echo ""
-            echo "🔍 Searching for ANY magiskboot file..."
-            MAGISKBOOT_PATH=$(unzip -l magisk.apk | grep -i "magiskboot" | grep "\.so" | head -1 | awk '{print $4}')
-            
-            if [ -n "$MAGISKBOOT_PATH" ]; then
-              echo "✅ Found: $MAGISKBOOT_PATH"
+            if [ "$APK_SIZE" -gt 1000000 ]; then
+              echo "✅ Size OK (>1MB)"
               
-              # Extract it
-              echo "Extracting..."
-              if unzip -o magisk.apk "$MAGISKBOOT_PATH" 2>&1; then
-                # Move to working location
-                mv "$MAGISKBOOT_PATH" ./magiskboot 2>/dev/null || {
-                  # Handle nested path
-                  mkdir -p temp_extract
-                  unzip -o magisk.apk "$MAGISKBOOT_PATH" -d temp_extract
-                  find temp_extract -name "*.so" -exec mv {} ./magiskboot \;
-                  rm -rf temp_extract
-                }
+              # Verify it's a valid ZIP
+              if unzip -t magisk.apk > /dev/null 2>&1; then
+                echo "✅ Valid APK"
                 
-                if [ -f magiskboot ] && [ -s magiskboot ]; then
-                  chmod +x magiskboot
-                  FILE_TYPE=$(file magiskboot)
-                  echo "✅ Extracted successfully!"
-                  echo "File type: $FILE_TYPE"
+                # Find magiskboot .so
+                echo ""
+                echo "Searching for libmagiskboot.so..."
+                unzip -l magisk.apk | grep -i "magiskboot" || true
+                
+                # Extract any magiskboot .so
+                MB_PATH=$(unzip -l magisk.apk | grep "magiskboot.*\.so" | head -1 | awk '{print $4}')
+                
+                if [ -n "$MB_PATH" ]; then
+                  echo "Found: ${MB_PATH}"
+                  unzip -o magisk.apk "${MB_PATH}"
                   
-                  # Check architecture
-                  if echo "$FILE_TYPE" | grep -q "x86-64"; then
-                    echo "✅ x86_64 binary - native execution"
-                    MAGISKBOOT_CMD="./magiskboot"
-                    DOWNLOAD_SUCCESS=true
-                  elif echo "$FILE_TYPE" | grep -q "AArch64\|arm64"; then
-                    echo "✅ ARM64 binary - will use QEMU"
-                    MAGISKBOOT_CMD="qemu-aarch64-static ./magiskboot"
-                    DOWNLOAD_SUCCESS=true
-                  elif echo "$FILE_TYPE" | grep -q "ARM"; then
-                    echo "✅ ARM binary - will use QEMU"
-                    MAGISKBOOT_CMD="qemu-arm-static ./magiskboot"
-                    DOWNLOAD_SUCCESS=true
-                  else
-                    echo "⚠️ Unknown architecture, trying anyway..."
+                  # Move to root
+                  mkdir -p temp_mb
+                  unzip -o magisk.apk "${MB_PATH}" -d temp_mb
+                  find temp_mb -name "*.so" -exec cp {} ./magiskboot \;
+                  rm -rf temp_mb
+                  
+                  if [ -f magiskboot ] && [ -s magiskboot ]; then
+                    chmod +x magiskboot
+                    FT=$(file magiskboot)
+                    echo "File type: ${FT}"
+                    
+                    if echo "$FT" | grep -q "x86-64"; then
+                      echo "✅ x86_64 - native"
+                      MAGISKBOOT_CMD="./magiskboot"
+                    else
+                      echo "✅ ARM - using QEMU"
+                      MAGISKBOOT_CMD="qemu-aarch64-static ./magiskboot"
+                    fi
                     DOWNLOAD_SUCCESS=true
                   fi
                 fi
+              else
+                echo "❌ Invalid ZIP"
               fi
             else
-              echo "❌ No magiskboot .so file found in APK!"
-              echo ""
-              echo "📋 ALL FILES IN lib/ FOLDER:"
-              unzip -l magisk.apk | grep "lib/" || echo "No lib/ folder!"
+              echo "❌ File too small (<1MB) - likely HTML error page"
+              cat magisk.apk | head -5 || true
             fi
-            
             rm -rf lib magisk.apk
           else
-            echo "❌ APK download failed!"
+            echo "❌ Download failed"
           fi
           
-          # ===== SOURCE 2: Direct magiskboot binary =====
+          # ===== SOURCE 2: Latest Magisk (Fallback) =====
           if [ "$DOWNLOAD_SUCCESS" = false ]; then
             echo ""
-            echo "📥 SOURCE 2: Direct magiskboot binary"
+            echo "📥 SOURCE 2: Latest Magisk APK (Fallback)"
             echo "-------------------------------------------"
             
-            # Try multiple known working sources
-            BINARY_URLS=(
-              "https://raw.githubusercontent.com/HuskyDG/MagiskBoot/main/magiskboot"
-              "https://github.com/HuskyDG/MagiskBoot/releases/latest/download/magiskboot"
-              "https://raw.githubusercontent.com/5ec1cff/magiskboot/main/magiskboot"
-            )
+            LATEST_URL="https://github.com/topjohnwu/Magisk/releases/latest/download/Magisk.apk"
+            echo "URL: ${LATEST_URL}"
             
-            for URL in "${BINARY_URLS[@]}"; do
-              echo "Trying: $URL"
-              HTTP_CODE=$(curl -sL -w "%{http_code}" -o magiskboot "$URL")
+            wget --no-verbose --tries=3 --timeout=30 -O magisk.apk "${LATEST_URL}" 2>&1 || echo "Download attempt finished"
+            
+            if [ -f magisk.apk ]; then
+              APK_SIZE=$(stat -c%s magisk.apk 2>/dev/null || stat -f%z magisk.apk 2>/dev/null || echo "0")
+              echo "Downloaded size: ${APK_SIZE} bytes"
               
-              if [ "$HTTP_CODE" = "200" ] && [ -f magiskboot ] && [ -s magiskboot ]; then
-                FILE_TYPE=$(file magiskboot)
-                echo "File type: $FILE_TYPE"
+              if [ "$APK_SIZE" -gt 1000000 ] && unzip -t magisk.apk > /dev/null 2>&1; then
+                echo "✅ Valid APK"
                 
-                if echo "$FILE_TYPE" | grep -qE "(ELF|executable)"; then
-                  chmod +x magiskboot
-                  echo "✅ Binary downloaded!"
+                MB_PATH=$(unzip -l magisk.apk | grep "magiskboot.*\.so" | head -1 | awk '{print $4}')
+                if [ -n "$MB_PATH" ]; then
+                  mkdir -p temp_mb
+                  unzip -o magisk.apk "${MB_PATH}" -d temp_mb
+                  find temp_mb -name "*.so" -exec cp {} ./magiskboot \;
+                  rm -rf temp_mb
                   
-                  if echo "$FILE_TYPE" | grep -q "x86-64"; then
-                    MAGISKBOOT_CMD="./magiskboot"
-                  else
-                    MAGISKBOOT_CMD="qemu-aarch64-static ./magiskboot"
+                  if [ -f magiskboot ]; then
+                    chmod +x magiskboot
+                    FT=$(file magiskboot)
+                    echo "File type: ${FT}"
+                    
+                    if echo "$FT" | grep -q "x86-64"; then
+                      MAGISKBOOT_CMD="./magiskboot"
+                    else
+                      MAGISKBOOT_CMD="qemu-aarch64-static ./magiskboot"
+                    fi
+                    DOWNLOAD_SUCCESS=true
                   fi
-                  DOWNLOAD_SUCCESS=true
-                  break
-                else
-                  rm -f magiskboot
                 fi
               fi
-            done
+              rm -rf lib magisk.apk
+            fi
+          fi
+          
+          # ===== SOURCE 3: Pre-built Binary =====
+          if [ "$DOWNLOAD_SUCCESS" = false ]; then
+            echo ""
+            echo "📥 SOURCE 3: Pre-built Binary"
+            echo "-------------------------------------------"
+            
+            # Try working sources
+            curl -sL -o magiskboot "https://github.com/5ec1cff/magiskboot/releases/latest/download/magiskboot-linux-x86_64"
+            
+            if [ -f magiskboot ] && [ -s magiskboot ]; then
+              FT=$(file magiskboot)
+              if echo "$FT" | grep -q "ELF"; then
+                chmod +x magiskboot
+                echo "✅ Binary downloaded"
+                DOWNLOAD_SUCCESS=true
+              else
+                rm -f magiskboot
+              fi
+            fi
           fi
           
           # ===== FINAL RESULT =====
           echo ""
           echo "========================================="
-          echo "📊 DOWNLOAD RESULT"
-          echo "========================================="
-          
           if [ "$DOWNLOAD_SUCCESS" = true ]; then
             echo "✅ SUCCESS!"
-            echo "MagiskBoot Command: $MAGISKBOOT_CMD"
-            echo "File: $(file magiskboot)"
-            echo "Size: $(ls -lh magiskboot | awk '{print $5}')"
-            echo "MAGISKBOOT_CMD=$MAGISKBOOT_CMD" >> $GITHUB_ENV
+            echo "Command: ${MAGISKBOOT_CMD}"
+            echo "MAGISKBOOT_CMD=${MAGISKBOOT_CMD}" >> $GITHUB_ENV
           else
             echo "❌ FAILED!"
-            echo "Could not obtain magiskboot from any source."
-            echo ""
-            echo "Debug info:"
-            echo "- APK URL: $APK_URL"
-            echo "- Magisk Version: v${MAGISK_VER}"
-            echo ""
-            echo "Please check if Magisk version exists on GitHub."
+            echo "Could not obtain magiskboot"
             exit 1
           fi
           echo "::endgroup::"
@@ -236,31 +228,21 @@ jobs:
       # ============================================================
       # STEP 3: Download Firmware
       # ============================================================
-      - name: 3️⃣ Download Firmware (Large Files)
+      - name: 3️⃣ Download Firmware
         run: |
           echo "::group::Step 3: Downloading Firmware"
-          echo "⏳ Starting large file downloads..."
           
-          echo "📥 Downloading OneUI 7..."
-          curl -L --progress-bar "${{ inputs.ui7_link }}" -o ui7.zip || { 
-            echo "❌ Error: UI7 Download Failed!"
-            exit 1
-          }
+          echo "Downloading OneUI 7..."
+          wget --no-verbose -O ui7.zip "${{ inputs.ui7_link }}" || { echo "❌ UI7 Failed"; exit 1; }
           echo "✅ OneUI 7 complete"
           
-          echo "📥 Downloading OneUI 8..."
-          curl -L --progress-bar "${{ inputs.ui8_link }}" -o ui8.zip || { 
-            echo "❌ Error: UI8 Download Failed!"
-            exit 1
-          }
+          echo "Downloading OneUI 8..."
+          wget --no-verbose -O ui8.zip "${{ inputs.ui8_link }}" || { echo "❌ UI8 Failed"; exit 1; }
           echo "✅ OneUI 8 complete"
-          
-          ls -lh ui7.zip ui8.zip
           
           mkdir -p ui7_folder ui8_folder
           unzip -q -o ui7.zip -d ui7_folder
           unzip -q -o ui8.zip -d ui8_folder
-          echo "✅ Extraction complete"
           echo "::endgroup::"
 
       # ============================================================
@@ -298,7 +280,7 @@ jobs:
           echo "OneUI 8 Bit: $BIT_UI8"
           
           if [ "$BIT_UI7" != "$BIT_UI8" ] && [ "$BIT_UI7" != "UNKNOWN" ] && [ "$BIT_UI8" != "UNKNOWN" ]; then
-            echo "⚠️ WARNING: Bit Version Mismatch!"
+            echo "⚠️ WARNING: Bit Mismatch!"
           else
             echo "✅ Bit versions match"
           fi
@@ -312,7 +294,7 @@ jobs:
       - name: 5️⃣ Patch AP (Magisk Root)
         id: patch_ap
         run: |
-          echo "::group::Step 5: Patching AP with Magisk"
+          echo "::group::Step 5: Patching AP"
           mkdir -p output
           
           MAGISKBOOT_CMD="${MAGISKBOOT_CMD:-./magiskboot}"
@@ -330,12 +312,11 @@ jobs:
           fi
           
           if [ -z "$AP_FILE" ]; then
-            echo "❌ AP file not found!"
+            echo "❌ AP not found!"
             exit 1
           fi
           
           echo "Found AP: $AP_FILE"
-          
           cp "$AP_FILE" AP_work.tar
           
           if [[ "$AP_FILE" == *.md5 ]]; then
@@ -378,7 +359,7 @@ jobs:
           echo "$MD5_HASH  AP_Patched.tar" >> AP_Patched.tar
           mv AP_Patched.tar output/AP_Patched.tar
           
-          echo "✅ AP Patching Complete"
+          echo "✅ Complete"
           echo "::endgroup::"
 
       # ============================================================
@@ -388,39 +369,30 @@ jobs:
         run: |
           echo "::group::Step 6: Preparing BL"
           mkdir -p output
-          
           BL_FILE=$(find ui8_folder -name "BL_*.tar.md5" | head -n 1)
           if [ -z "$BL_FILE" ]; then
             BL_FILE=$(find ui8_folder -name "BL_*.tar" | head -n 1)
           fi
-          
-          if [ -z "$BL_FILE" ]; then
-            echo "Warning: BL file not found"
-          else
+          if [ -n "$BL_FILE" ]; then
             cp "$BL_FILE" output/BL_Patched.tar
           fi
           echo "::endgroup::"
 
       # ============================================================
-      # STEP 7: Generate Device Info TXT
+      # STEP 7: Device Info
       # ============================================================
-      - name: 7️⃣ Generate Device Info TXT
+      - name: 7️⃣ Generate Device Info
         run: |
           BIT_VER="${{ steps.bit_check.outputs.bit_version }}"
           cat > output/device_info.txt << EOF
-          ========================================
-          Samsung Firmware Patch Information
-          ========================================
+          Samsung Firmware Patch Info
           Date: $(date)
-          Workflow Run ID: ${{ github.run_id }}
-          Magisk Version: ${{ inputs.magisk_version }}
-          Bit Version: $BIT_VER
-          ========================================
+          Magisk: ${{ inputs.magisk_version }}
+          Bit: $BIT_VER
           EOF
-          echo "::endgroup::"
 
       # ============================================================
-      # STEP 8: Upload Artifacts
+      # STEP 8: Upload
       # ============================================================
       - name: 8️⃣ Upload Artifacts
         uses: actions/upload-artifact@v4
