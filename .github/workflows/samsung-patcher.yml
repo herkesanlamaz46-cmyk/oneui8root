@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4  # Güncellendi
 
       - name: Install Dependencies
         run: |
@@ -141,10 +141,9 @@ jobs:
           cd ..
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4  # ✅ BURASI v4 OLARAK GÜNCELLENDİ
         with:
           name: Samsung-Patched-Firmware-Magisk26.3
           path: |
             Patched_BL.tar            Patched_AP.tar
-          # ⬇️ DEĞİŞİKLİK BURADA: 1 gün (24 saat) sonra otomatik silinir
           retention-days: 1
