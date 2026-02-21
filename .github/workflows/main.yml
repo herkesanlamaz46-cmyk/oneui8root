@@ -1,0 +1,68 @@
+name: Samsung One UI 8 Root
+
+on:
+  workflow_dispatch:
+    inputs:
+      link7:
+        description: 'OneUI 7 Link'
+        required: true
+      link8:
+        description: 'OneUI 8 Link'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kurulum
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip tar lz4 p7zip-full cpio
+
+      - name: Indirme
+        run: |
+          wget -O f7.zip "${{ inputs.link7 }}"
+          wget -O f8.zip "${{ inputs.link8 }}"
+          mkdir -p s7 s8
+          unzip -q f7.zip -d s7
+          unzip -q f8.zip -d s8
+
+      - name: BL Islemi
+        run: |
+          B7=$(find s7 -name "BL_*.tar*" | head -1)
+          B8=$(find s8 -name "BL_*.tar*" | head -1)
+          mkdir b1 b2
+          tar -xf "$B8" -C b1
+          tar -xf "$B7" -C b2
+          rm -f b1/abl.elf.lz4
+          cp b2/abl.elf.lz4 b1/
+          cd b1 && tar -cf ../BL.tar ./* && cd ..
+
+      - name: AP Islemi
+        run: |
+          A8=$(find s8 -name "AP_*.tar*" | head -1)
+          mkdir a1
+          tar -xf "$A8" -C a1
+          BOOT=$(find a1 -name "boot.img" -o -name "init_boot.img" | head -1)
+          wget -O mb https://github.com/HuskyDG/magiskboot-builds/releases/download/latest/magiskboot_linux_x86_64
+          chmod +x mb
+          mkdir p
+          cp "$BOOT" p/b.img
+          cd p
+          ../mb unpack b.img
+          if [ -f ramdisk.cpio ]; then ../mb cpio ramdisk.cpio "add 0750 init.rc $(curl -s https://raw.githubusercontent.com/topjohnwu/magisk/master/stub/magiskinit.rc)" "patch"; fi
+          ../mb repack b.img
+          [ -f b_new.img ] && mv b_new.img ../a1/$(basename $BOOT)
+          cd ..
+          cd a1 && tar -cf ../AP.tar ./* && cd ..
+
+      - name: Yukleme
+        uses: actions/upload-artifact@v4
+        with:
+          name: Root-Dosyalari
+          path: |
+            BL.tar
+            AP.tar
+          retention-days: 1
