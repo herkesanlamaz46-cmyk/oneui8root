@@ -58,87 +58,106 @@ jobs:
         run: |
           echo "Setting up environment..."
           sudo apt-get update
-          sudo apt-get install -y lz4 unzip wget curl tar openssl jq xz-utils file
+          sudo apt-get install -y lz4 unzip wget curl tar openssl jq xz-utils file qemu-user-static
           echo "✅ Environment ready"
 
       # ============================================================
-      # STEP 2: Download MagiskBoot (Direct Binary) ✅
+      # STEP 2: Download MagiskBoot (Working Sources) ✅
       # ============================================================
-      - name: 2️⃣ Download MagiskBoot (x86_64 Binary)
+      - name: 2️⃣ Download MagiskBoot (x86_64 or ARM64+QEMU)
         run: |
           echo "::group::Step 2: Downloading MagiskBoot"
           
-          # Multiple sources for x86_64 magiskboot
-          SOURCES=(
-            "https://github.com/IAmTjeerd/MagiskBoot/releases/download/v27.0/magiskboot-x86_64"
-            "https://github.com/IAmTjeerd/MagiskBoot/releases/download/v26.4/magiskboot-x86_64"
-            "https://github.com/IAmTjeerd/MagiskBoot/releases/download/v26.3/magiskboot-x86_64"
-            "https://raw.githubusercontent.com/IAmTjeerd/MagiskBoot/main/magiskboot-x86_64"
-          )
-          
+          MAGISK_VER="${{ inputs.magisk_version }}"
           DOWNLOAD_SUCCESS=false
           
-          for i in "${!SOURCES[@]}"; do
-            SOURCE="${SOURCES[$i]}"
-            echo "Trying source $((i+1))/${#SOURCES[@]}: $SOURCE"
-            
-            HTTP_CODE=$(curl -sL -w "%{http_code}" -o magiskboot "$SOURCE")
+          # ===== SOURCE 1: Official Magisk APK (extract arm64) =====
+          echo "📥 Source 1: Official Magisk APK..."
+          APK_URL="https://github.com/topjohnwu/Magisk/releases/download/v${MAGISK_VER}/Magisk-v${MAGISK_VER}.apk"
+          curl -sL --retry 3 -o magisk.apk "$APK_URL"
+          
+          if [ -f magisk.apk ] && [ -s magisk.apk ]; then
+            FILE_TYPE=$(file magisk.apk)
+            if echo "$FILE_TYPE" | grep -qi "zip\|archive"; then
+              echo "✅ Valid APK downloaded"
+              
+              # List available architectures
+              echo "Available architectures in APK:"
+              unzip -l magisk.apk | grep "libmagiskboot" || true
+              
+              # Try x86_64 first
+              if unzip -o magisk.apk "lib/x86_64/libmagiskboot.so" 2>/dev/null; then
+                mv lib/x86_64/libmagiskboot.so ./magiskboot
+                chmod +x magiskboot
+                echo "✅ Extracted x86_64 from APK"
+                DOWNLOAD_SUCCESS=true
+              # Fallback to arm64 + QEMU
+              elif unzip -o magisk.apk "lib/arm64-v8a/libmagiskboot.so" 2>/dev/null; then
+                mv lib/arm64-v8a/libmagiskboot.so ./magiskboot
+                chmod +x magiskboot
+                echo "✅ Extracted arm64 from APK (will use QEMU)"
+                MAGISKBOOT_CMD="qemu-aarch64-static ./magiskboot"
+                echo "export MAGISKBOOT_CMD='$MAGISKBOOT_CMD'" >> $GITHUB_ENV
+                DOWNLOAD_SUCCESS=true
+              fi
+            fi
+            rm -rf lib magisk.apk
+          fi
+          
+          # ===== SOURCE 2: Alternative MagiskBoot Repo =====
+          if [ "$DOWNLOAD_SUCCESS" = false ]; then
+            echo "📥 Source 2: Alternative MagiskBoot repo..."
+            ALT_URL="https://github.com/5ec1cff/magiskboot/releases/download/${MAGISK_VER}/magiskboot"
+            HTTP_CODE=$(curl -sL -w "%{http_code}" -o magiskboot "$ALT_URL")
             
             if [ "$HTTP_CODE" = "200" ] && [ -f magiskboot ] && [ -s magiskboot ]; then
-              # Verify it's a real binary, not HTML
               FILE_TYPE=$(file magiskboot)
-              echo "File type: $FILE_TYPE"
-              
-              if echo "$FILE_TYPE" | grep -qE "(ELF|executable|binary)"; then
+              if echo "$FILE_TYPE" | grep -qE "(ELF|executable)"; then
                 chmod +x magiskboot
-                echo "✅ Valid binary downloaded from source $((i+1))"
+                echo "✅ Downloaded from alternative source"
                 DOWNLOAD_SUCCESS=true
-                break
               else
-                echo "⚠️ Not a valid binary, trying next..."
                 rm -f magiskboot
               fi
-            else
-              echo "⚠️ Source $((i+1)) failed (HTTP $HTTP_CODE), trying next..."
-              rm -f magiskboot
             fi
-          done
+          fi
           
+          # ===== SOURCE 3: Latest Magisk (fallback) =====
           if [ "$DOWNLOAD_SUCCESS" = false ]; then
-            echo "❌ All direct sources failed. Trying APK extract fallback..."
-            
-            # Fallback: Try to extract from Magisk APK
-            MAGISK_VER="${{ inputs.magisk_version }}"
-            curl -sL -o magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/v${MAGISK_VER}/Magisk-v${MAGISK_VER}.apk"
+            echo "📥 Source 3: Latest Magisk APK..."
+            curl -sL -o magisk.apk "https://github.com/topjohnwu/Magisk/releases/latest/download/Magisk.apk"
             
             if [ -f magisk.apk ] && [ -s magisk.apk ]; then
-              FILE_TYPE=$(file magisk.apk)
-              if echo "$FILE_TYPE" | grep -qi "zip\|archive"; then
-                echo "✅ Valid APK downloaded"
-                unzip -l magisk.apk | grep "libmagiskboot" || true
-                
-                # Try x86_64 first, then arm64 (will fail but we try)
-                if unzip -o magisk.apk "lib/x86_64/libmagiskboot.so" 2>/dev/null; then
-                  mv lib/x86_64/libmagiskboot.so ./magiskboot
-                  chmod +x magiskboot
-                  echo "✅ Extracted from APK x86_64"
-                  DOWNLOAD_SUCCESS=true
-                fi
+              if unzip -o magisk.apk "lib/arm64-v8a/libmagiskboot.so" 2>/dev/null; then
+                mv lib/arm64-v8a/libmagiskboot.so ./magiskboot
+                chmod +x magiskboot
+                echo "✅ Extracted arm64 from latest APK (will use QEMU)"
+                MAGISKBOOT_CMD="qemu-aarch64-static ./magiskboot"
+                echo "export MAGISKBOOT_CMD='$MAGISKBOOT_CMD'" >> $GITHUB_ENV
+                DOWNLOAD_SUCCESS=true
               fi
               rm -rf lib magisk.apk
             fi
           fi
           
+          # ===== FINAL CHECK =====
           if [ "$DOWNLOAD_SUCCESS" = false ]; then
-            echo "❌ Critical: Could not obtain valid magiskboot!"
+            echo "❌ Critical: Could not obtain magiskboot!"
             exit 1
           fi
           
-          # Final verification
-          if ./magiskboot --help > /dev/null 2>&1; then
+          # Set default command if not using QEMU
+          if [ -z "$MAGISKBOOT_CMD" ]; then
+            MAGISKBOOT_CMD="./magiskboot"
+            echo "export MAGISKBOOT_CMD='./magiskboot'" >> $GITHUB_ENV
+          fi
+          
+          # Verify
+          echo "Verifying magiskboot..."
+          if $MAGISKBOOT_CMD --help > /dev/null 2>&1; then
             echo "✅ MagiskBoot verified and ready!"
           else
-            echo "⚠️ Warning: Help check skipped, proceeding..."
+            echo "⚠️ Warning: Verification skipped"
           fi
           echo "::endgroup::"
 
@@ -221,13 +240,18 @@ jobs:
           echo "::endgroup::"
 
       # ============================================================
-      # STEP 5: Patch AP
+      # STEP 5: Patch AP (Using MAGISKBOOT_CMD)
       # ============================================================
       - name: 5️⃣ Patch AP (Magisk Root)
         id: patch_ap
         run: |
           echo "::group::Step 5: Patching AP with Magisk"
           mkdir -p output
+          
+          # Load magiskboot command
+          source $GITHUB_ENV 2>/dev/null || true
+          MB_CMD="${MAGISKBOOT_CMD:-./magiskboot}"
+          echo "Using magiskboot command: $MB_CMD"
           
           AP_FILE=$(find ui8_folder -name "AP_*.tar.md5" | head -n 1)
           if [ -z "$AP_FILE" ]; then
@@ -279,7 +303,7 @@ jobs:
           fi
           
           echo "Patching $BOOT_IMG..."
-          ./magiskboot patch "$BOOT_IMG"
+          $MB_CMD patch "$BOOT_IMG"
           
           if [ -f "${BOOT_IMG}.patched" ]; then
             mv "${BOOT_IMG}.patched" "$BOOT_IMG"
