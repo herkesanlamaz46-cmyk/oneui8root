@@ -32,7 +32,7 @@ jobs:
           
           mkdir -p d7 d8
           unzip -q ui7.zip -d d7
-          unzip -q ui8.zip -d d8
+          unzip -q u8.zip -d d8
           
           B7=$(find d7 -name "BL_*.tar*" | head -n 1)
           B8=$(find d8 -name "BL_*.tar*" | head -n 1)
@@ -47,9 +47,8 @@ jobs:
           echo "B8=$B8" >> $GITHUB_ENV
           echo "A8=$A8" >> $GITHUB_ENV
 
-      - name: Step 1: BL Swap (OneUI 7 -> 8)        run: |
+      - name: Step 1: BL Swap        run: |
           mkdir -p w_bl w_old
-          echo "🔄 BL dosyaları açılıyor..."
           tar -xf "$B8" -C w_bl
           tar -xf "$B7" -C w_old
           
@@ -58,25 +57,21 @@ jobs:
             exit 1
           fi
           
-          echo "🛠️ abl.elf.lz4 değiştiriliyor..."
           rm -f w_bl/abl.elf.lz4
           cp w_old/abl.elf.lz4 w_bl/
           
-          echo "📦 BL paketleniyor..."
           cd w_bl
           tar -cvf ../BL_Patched.tar ./*
           cd ..
 
-      - name: Step 2: AP Magisk Patch (v26.3)
+      - name: Step 2: AP Magisk Patch
         run: |
           mkdir -p w_ap m_tools
-          echo "📦 AP açılıyor..."
           tar -xf "$A8" -C w_ap
           
           BOOT=$(find w_ap -name "boot.img" -o -name "init_boot.img" | head -n 1)
           if [ -z "$BOOT" ]; then echo "❌ Boot imajı bulunamadı!"; exit 1; fi
           
-          echo "⬇️ MagiskBoot indiriliyor..."
           wget -O m_tools/mb https://github.com/HuskyDG/magiskboot-builds/releases/download/latest/magiskboot_linux_x86_64
           chmod +x m_tools/mb
           
@@ -84,7 +79,6 @@ jobs:
           cp "$BOOT" tmp/boot.img
           cd tmp
           
-          echo "🔨 Patchleme başlıyor..."
           ../m_tools/mb unpack boot.img
           
           if [ -f "ramdisk.cpio" ]; then
@@ -92,23 +86,17 @@ jobs:
               "add 0750 init.rc $(curl -s https://raw.githubusercontent.com/topjohnwu/magisk/master/stub/magiskinit.rc)" \
               "patch" \
               "backup .sha1"
-          else
-            echo "⚠️ Ramdisk bulunamadı, sadece repack yapılacak."
           fi
           
-          ../m_tools/mb repack boot.img          
+          ../m_tools/mb repack boot.img
+          
           if [ -f "boot_new.img" ]; then
             mv boot_new.img ../w_ap/$(basename $BOOT)
-            echo "✅ AP başarıyla yamalandı."
-          else
-            echo "⚠️ Yeni imaj oluşmadı, orijinal korunuyor."
           fi
           cd ..
 
       - name: Repack AP
-        run: |
-          cd w_ap
-          echo "📦 AP tekrar paketleniyor..."
+        run: |          cd w_ap
           tar -cvf ../AP_Patched.tar ./*
           cd ..
 
