@@ -29,7 +29,7 @@ jobs:
           echo "Setting up environment..."
           sudo apt-get update
           sudo apt-get install -y lz4 unzip wget curl tar openssl qemu-user-static
-          echo "✅ Environment ready"
+          echo "Environment ready"
 
       - name: 2️⃣ Download MagiskBoot (v27.0)
         run: |
@@ -39,22 +39,23 @@ jobs:
           echo "URL: ${APK_URL}"
           wget --no-verbose --tries=3 --timeout=30 -O magisk.apk "${APK_URL}"
           if [ ! -f magisk.apk ]; then
-            echo "❌ Download failed!"
+            echo "Download failed!"
             exit 1
           fi
           APK_SIZE=$(stat -c%s magisk.apk)
           echo "Downloaded size: ${APK_SIZE} bytes"
           if [ "$APK_SIZE" -lt 1000000 ]; then
-            echo "❌ File too small!"
+            echo "File too small!"
             exit 1
-          fi          if ! unzip -t magisk.apk > /dev/null 2>&1; then
-            echo "❌ Invalid APK!"
+          fi          unzip -t magisk.apk > /dev/null 2>&1
+          if [ $? -ne 0 ]; then
+            echo "Invalid APK!"
             exit 1
           fi
-          echo "✅ Valid APK downloaded"
+          echo "Valid APK downloaded"
           MB_PATH=$(unzip -l magisk.apk | grep "magiskboot.*\.so" | head -1 | awk '{print $4}')
           if [ -z "$MB_PATH" ]; then
-            echo "❌ magiskboot.so not found!"
+            echo "magiskboot.so not found!"
             exit 1
           fi
           echo "Found: ${MB_PATH}"
@@ -67,28 +68,35 @@ jobs:
           echo "File type: ${FT}"
           if echo "$FT" | grep -q "AArch64\|ARM"; then
             echo "MAGISKBOOT_CMD=qemu-aarch64-static ./magiskboot" >> $GITHUB_ENV
-            echo "✅ ARM64 binary (QEMU)"
+            echo "ARM64 binary (QEMU)"
           else
             echo "MAGISKBOOT_CMD=./magiskboot" >> $GITHUB_ENV
-            echo "✅ x86_64 binary (Native)"
+            echo "x86_64 binary (Native)"
           fi
           echo "MAGISK_VERSION=27.0" >> $GITHUB_ENV
-          echo "✅ MagiskBoot ready"
+          echo "MagiskBoot ready"
           echo "::endgroup::"
 
       - name: 3️⃣ Download Firmware
         run: |
           echo "::group::Step 3: Downloading Firmware"
           echo "Downloading OneUI 7..."
-          wget --no-verbose -O ui7.zip "${{ inputs.ui7_link }}" || exit 1
-          echo "✅ OneUI 7 complete"
+          wget --no-verbose -O ui7.zip "${{ inputs.ui7_link }}"
+          if [ $? -ne 0 ]; then
+            echo "UI7 Download Failed!"
+            exit 1
+          fi
+          echo "OneUI 7 complete"
           echo "Downloading OneUI 8..."
-          wget --no-verbose -O ui8.zip "${{ inputs.ui8_link }}" || exit 1
-          echo "✅ OneUI 8 complete"
+          wget --no-verbose -O ui8.zip "${{ inputs.ui8_link }}"
+          if [ $? -ne 0 ]; then
+            echo "UI8 Download Failed!"
+            exit 1
+          fi
+          echo "OneUI 8 complete"
           mkdir -p ui7_folder ui8_folder
           unzip -q -o ui7.zip -d ui7_folder
-          unzip -q -o ui8.zip -d ui8_folder
-          echo "✅ Firmware extracted"
+          unzip -q -o ui8.zip -d ui8_folder          echo "Firmware extracted"
           echo "::endgroup::"
 
       - name: 4️⃣ Bit Version Check
@@ -96,19 +104,26 @@ jobs:
         continue-on-error: true
         run: |
           echo "::group::Step 4: Bit Version Check"
-          extract_bit() {            AP_FILE=$(find "$1" -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n1)
-            [ -z "$AP_FILE" ] && AP_FILE=$(find "$1" -name "BL_*.tar.md5" | head -n1)
-            [ -z "$AP_FILE" ] && { echo "UNKNOWN"; return 1; }
-            echo "$(basename "$AP_FILE")" | grep -oP '(XXU|XSU|XXS|OXU)\K[0-9]' | head -n1 || echo "UNKNOWN"
+          extract_bit() {
+            local folder="$1"
+            AP_FILE=$(find "$folder" -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n1)
+            if [ -z "$AP_FILE" ]; then
+              AP_FILE=$(find "$folder" -name "BL_*.tar.md5" | head -n1)
+            fi
+            if [ -z "$AP_FILE" ]; then
+              echo "UNKNOWN"
+              return 1
+            fi
+            basename "$AP_FILE" | grep -oP '(XXU|XSU|XXS|OXU)\K[0-9]' | head -n1 || echo "UNKNOWN"
           }
           BIT_UI7=$(extract_bit "ui7_folder")
           BIT_UI8=$(extract_bit "ui8_folder")
           echo "OneUI 7 Bit: $BIT_UI7 | OneUI 8 Bit: $BIT_UI8"
           if [ "$BIT_UI7" != "$BIT_UI8" ] && [ "$BIT_UI7" != "UNKNOWN" ]; then
-            echo "⚠️ Bit Mismatch!"
+            echo "Bit Mismatch!"
             echo "bit_status=MISMATCH" >> $GITHUB_OUTPUT
           else
-            echo "✅ Bit match"
+            echo "Bit match"
             echo "bit_status=MATCH" >> $GITHUB_OUTPUT
           fi
           echo "bit_version=$BIT_UI8" >> $GITHUB_OUTPUT
@@ -121,21 +136,23 @@ jobs:
           mkdir -p output
           BL_UI7=$(find ui7_folder -name "BL_*.tar.md5" | head -n 1)
           BL_UI8=$(find ui8_folder -name "BL_*.tar.md5" | head -n 1)
-          [ -z "$BL_UI7" ] || [ -z "$BL_UI8" ] && { echo "❌ BL files not found!"; exit 1; }
+          if [ -z "$BL_UI7" ] || [ -z "$BL_UI8" ]; then
+            echo "BL files not found!"
+            exit 1
+          fi
           echo "OneUI 7 BL: $(basename "$BL_UI7")"
           echo "OneUI 8 BL: $(basename "$BL_UI8")"
           cp "$BL_UI7" BL_UI7.tar
           head -c -56 BL_UI7.tar > BL_UI7_clean.tar 2>/dev/null || cp BL_UI7.tar BL_UI7_clean.tar
           mv BL_UI7_clean.tar BL_UI7.tar
-          tar -xf BL_UI7.tar --ignore-zeros 2>/dev/null || tar -xf BL_UI7.tar
-          if [ -f "abl.elf.lz4" ]; then
+          tar -xf BL_UI7.tar --ignore-zeros 2>/dev/null || tar -xf BL_UI7.tar          if [ -f "abl.elf.lz4" ]; then
             cp abl.elf.lz4 abl.elf.lz4.ui7
             rm -f abl.elf.lz4
-            echo "✅ Found abl.elf.lz4"
+            echo "Found abl.elf.lz4"
           elif [ -f "abl.elf" ]; then
             cp abl.elf abl.elf.ui7
             rm -f abl.elf
-            echo "✅ Found abl.elf"
+            echo "Found abl.elf"
           fi
           rm -f BL_UI7.tar *.md5
           cp "$BL_UI8" BL_UI8.tar
@@ -145,14 +162,15 @@ jobs:
           if [ -f "abl.elf.lz4.ui7" ]; then
             rm -f abl.elf.lz4
             cp abl.elf.lz4.ui7 abl.elf.lz4
-            echo "✅ Swapped abl.elf.lz4 (UI7 → UI8)"            echo "swap_status=SUCCESS" >> $GITHUB_OUTPUT
+            echo "Swapped abl.elf.lz4 (UI7 to UI8)"
+            echo "swap_status=SUCCESS" >> $GITHUB_OUTPUT
           elif [ -f "abl.elf.ui7" ]; then
             rm -f abl.elf
             cp abl.elf.ui7 abl.elf
-            echo "✅ Swapped abl.elf (UI7 → UI8)"
+            echo "Swapped abl.elf (UI7 to UI8)"
             echo "swap_status=SUCCESS" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ No swap performed"
+            echo "No swap performed"
             echo "swap_status=SKIPPED" >> $GITHUB_OUTPUT
           fi
           tar -cf BL_Patched.tar --format=ustar *
@@ -160,7 +178,7 @@ jobs:
           echo "$MD5_HASH  BL_Patched.tar" >> BL_Patched.tar
           mv BL_Patched.tar output/BL_Patched.tar
           rm -rf BL_UI8.tar abl.*.ui7
-          echo "✅ BL Swap Complete"
+          echo "BL Swap Complete"
           echo "::endgroup::"
 
       - name: 6️⃣ Patch AP (unpack + cpio + repack)
@@ -172,13 +190,20 @@ jobs:
           export KEEPVERITY=false
           export KEEPFORCEENCRYPT=false
           export PATCHVBMETAFLAG=true
-          echo "✅ ENV: PATCHVBMETAFLAG=true"
+          echo "ENV: PATCHVBMETAFLAG=true"
           AP_FILE=$(find ui8_folder -name "AP_*.tar.md5" | head -n 1)
-          [ -z "$AP_FILE" ] && AP_FILE=$(find ui8_folder -name "AP_*.tar" | head -n 1)
-          [ -z "$AP_FILE" ] && { echo "❌ AP not found!"; exit 1; }
+          if [ -z "$AP_FILE" ]; then
+            AP_FILE=$(find ui8_folder -name "AP_*.tar" | head -n 1)
+          fi          if [ -z "$AP_FILE" ]; then
+            echo "AP not found!"
+            exit 1
+          fi
           echo "Found AP: $(basename "$AP_FILE")"
           cp "$AP_FILE" AP_work.tar
-          [[ "$AP_FILE" == *.md5 ]] && { head -c -56 AP_work.tar > AP_clean.tar 2>/dev/null || cp AP_work.tar AP_clean.tar; mv AP_clean.tar AP_work.tar; }
+          if [[ "$AP_FILE" == *.md5 ]]; then
+            head -c -56 AP_work.tar > AP_clean.tar 2>/dev/null || cp AP_work.tar AP_clean.tar
+            mv AP_clean.tar AP_work.tar
+          fi
           tar -xf AP_work.tar --ignore-zeros 2>/dev/null || tar -xf AP_work.tar
           BOOT_IMG=""
           if [ -f "init_boot.img" ]; then
@@ -190,44 +215,46 @@ jobs:
             lz4 -d boot.img.lz4 boot.img
             BOOT_IMG="boot.img"
           else
-            echo "❌ No boot image!"
+            echo "No boot image!"
             exit 1
           fi
           echo "Found: $BOOT_IMG"
-          [ "${{ inputs.keep_original }}" == "true" ] && cp "$BOOT_IMG" "output/Original_$BOOT_IMG"          echo "🔓 Step 1: Unpacking boot image..."
+          if [ "${{ inputs.keep_original }}" == "true" ]; then
+            cp "$BOOT_IMG" "output/Original_$BOOT_IMG"
+          fi
+          echo "Step 1: Unpacking boot image..."
           $MAGISKBOOT_CMD unpack "$BOOT_IMG"
-          echo "🔓 Step 2: Checking ramdisk..."
+          echo "Step 2: Checking ramdisk..."
           if [ -f "ramdisk.cpio" ]; then
-            echo "✅ Found ramdisk.cpio"
+            echo "Found ramdisk.cpio"
           elif [ -f "ramdisk.cpio.gz" ]; then
-            echo "✅ Found ramdisk.cpio.gz"
+            echo "Found ramdisk.cpio.gz"
             gunzip ramdisk.cpio.gz
           elif [ -f "ramdisk.cpio.lz4" ]; then
-            echo "✅ Found ramdisk.cpio.lz4"
+            echo "Found ramdisk.cpio.lz4"
             lz4 -d ramdisk.cpio.lz4 ramdisk.cpio
           else
-            echo "❌ No ramdisk found!"
+            echo "No ramdisk found!"
             ls -la
             exit 1
           fi
-          echo "🔓 Step 3: Patching ramdisk with Magisk..."
+          echo "Step 3: Patching ramdisk with Magisk..."
           $MAGISKBOOT_CMD cpio ramdisk.cpio "patch"
-          echo "🔓 Step 4: Repacking boot image..."
+          echo "Step 4: Repacking boot image..."
           $MAGISKBOOT_CMD repack "$BOOT_IMG"
           if [ -f "new-boot.img" ]; then
-            mv new-boot.img "$BOOT_IMG"
-            echo "✅ Repacked to new-boot.img"
+            mv new-boot.img "$BOOT_IMG"            echo "Repacked to new-boot.img"
           elif [ -f "${BOOT_IMG}.patched" ]; then
             mv "${BOOT_IMG}.patched" "$BOOT_IMG"
-            echo "✅ Using .patched file"
+            echo "Using .patched file"
           fi
-          echo "🔓 Step 5: Creating AP_Patched.tar..."
+          echo "Step 5: Creating AP_Patched.tar..."
           tar -cf AP_Patched.tar --format=ustar "$BOOT_IMG"
           MD5_HASH=$(md5sum AP_Patched.tar | awk '{print $1}')
           echo "$MD5_HASH  AP_Patched.tar" >> AP_Patched.tar
           mv AP_Patched.tar output/AP_Patched.tar
           $MAGISKBOOT_CMD cleanup || true
-          echo "✅ AP Patch Complete"
+          echo "AP Patch Complete"
           echo "patch_status=SUCCESS" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
@@ -243,7 +270,8 @@ jobs:
           WHAT WAS DONE:
           ========================================
           1. BL SWAP: OneUI 7 -> OneUI 8 (abl.elf.lz4)
-             Status: ${{ steps.bl_swap.outputs.swap_status }}          
+             Status: ${{ steps.bl_swap.outputs.swap_status }}
+          
           2. AP PATCH: Magisk ${{ env.MAGISK_VERSION }}
              Method: unpack + cpio patch + repack
              Status: ${{ steps.ap_patch.outputs.patch_status }}
@@ -264,8 +292,7 @@ jobs:
           4. Click Start
           
           WARNINGS:
-          ========================================
-          - Knox will be tripped (0x1)
+          ========================================          - Knox will be tripped (0x1)
           - Warranty void
           - Backup your data!
           ========================================
@@ -278,7 +305,7 @@ jobs:
           BL Swap: ${{ steps.bl_swap.outputs.swap_status }}
           AP Patch: ${{ steps.ap_patch.outputs.patch_status }}
           EOF
-          echo "✅ Report generated"
+          echo "Report generated"
 
       - name: 8️⃣ Upload Artifacts
         uses: actions/upload-artifact@v4
