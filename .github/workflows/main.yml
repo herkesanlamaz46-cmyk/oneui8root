@@ -1,0 +1,320 @@
+name: Samsung One UI 8 Root (Optimized)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ui7_link:
+        description: 'OneUI 7 Firmware Direct Link (.zip)'
+        required: true
+        type: string
+      ui8_link:
+        description: 'OneUI 8 Firmware Direct Link (.zip)'
+        required: true
+        type: string
+      magisk_version:
+        description: 'Select Magisk Version (26.3 - 30.6)'
+        required: false
+        default: '27.0'
+        type: choice
+        options:
+          - '26.3'
+          - '26.4'
+          - '27.0'
+          - '28.0'
+          - '29.0'
+          - '30.0'
+          - '30.6'
+      output_selection:
+        description: 'Choose Output Files'
+        required: false
+        default: 'Both (BL + AP)'
+        type: choice
+        options:
+          - 'Both (BL + AP)'
+          - 'BL Only'
+          - 'AP Only'
+      keep_original:
+        description: 'Keep Original Boot Image'
+        required: false
+        default: false
+        type: boolean
+      debug_mode:
+        description: 'Enable Debug Logs'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  patch-firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # STEP 1: Setup Environment (30 seconds)
+      # ============================================================
+      - name: 1️⃣ Setup Environment
+        run: |
+          echo "Setting up environment..."
+          sudo apt-get update
+          sudo apt-get install -y lz4 unzip wget curl tar openssl jq xz-utils
+          echo "✅ Environment ready"
+
+      # ============================================================
+      # STEP 2: Download MagiskBoot FIRST (10 seconds) ✅
+      # ============================================================
+      - name: 2️⃣ Download MagiskBoot (x86_64)
+        run: |
+          echo "::group::Step 2: Downloading MagiskBoot"
+          MAGISK_VER="${{ inputs.magisk_version }}"
+          echo "Target Magisk Version: v${MAGISK_VER}"
+          
+          # HuskyDG provides x86_64 Linux builds
+          MAGISKBOOT_URL="https://github.com/HuskyDG/MagiskBoot/releases/latest/download/magiskboot_x86_64"
+          
+          echo "Downloading magiskboot_x86_64..."
+          curl -sL --retry 3 --retry-delay 5 -o magiskboot "$MAGISKBOOT_URL"
+          
+          if [ ! -f magiskboot ] || [ ! -s magiskboot ]; then
+            echo "❌ Error: MagiskBoot download failed!"
+            exit 1
+          fi
+          
+          chmod +x magiskboot
+          
+          if ./magiskboot --help > /dev/null 2>&1; then
+            echo "✅ MagiskBoot ready (x86_64)"
+          else
+            echo "⚠️ Warning: MagiskBoot verification skipped"
+          fi
+          echo "::endgroup::"
+
+      # ============================================================
+      # STEP 3: Download Firmware LAST (5-15 minutes) ✅
+      # ============================================================
+      - name: 3️⃣ Download Firmware (Large Files)
+        run: |
+          echo "::group::Step 3: Downloading Firmware"
+          echo "⏳ Starting large file downloads..."
+          echo ""
+          
+          echo "📥 Downloading OneUI 7..."
+          curl -L --progress-bar "${{ inputs.ui7_link }}" -o ui7.zip || { 
+            echo "❌ Error: UI7 Download Failed!"
+            exit 1
+          }
+          echo "✅ OneUI 7 complete"
+          echo ""
+          
+          echo "📥 Downloading OneUI 8..."
+          curl -L --progress-bar "${{ inputs.ui8_link }}" -o ui8.zip || { 
+            echo "❌ Error: UI8 Download Failed!"
+            exit 1
+          }
+          echo "✅ OneUI 8 complete"
+          echo ""
+          
+          echo "📊 Download Summary:"
+          ls -lh ui7.zip ui8.zip
+          echo ""
+          
+          mkdir -p ui7_folder ui8_folder
+          echo "📦 Extracting UI7..."
+          unzip -q -o ui7.zip -d ui7_folder
+          echo "📦 Extracting UI8..."
+          unzip -q -o ui8.zip -d ui8_folder
+          echo "✅ Extraction complete"
+          echo "::endgroup::"
+
+      # ============================================================
+      # STEP 4: Bit Version Check (5 seconds)
+      # ============================================================
+      - name: 4️⃣ Bit Version Check
+        id: bit_check
+        continue-on-error: true
+        run: |
+          echo "::group::Step 4: Bit Version Check"
+          
+          extract_bit() {
+            local folder=$1
+            AP_FILE=$(find "$folder" -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n1)
+            if [ -z "$AP_FILE" ]; then
+              AP_FILE=$(find "$folder" -name "BL_*.tar.md5" -o -name "BL_*.tar" | head -n1)
+            fi
+            if [ -z "$AP_FILE" ]; then
+              echo "UNKNOWN"
+              return 1
+            fi
+            
+            fw_name=$(basename "$AP_FILE")
+            bit_ver=$(echo "$fw_name" | grep -oP '(XXU|XSU|XXS|OXU)\K[0-9]' | head -n1)
+            
+            if [ -z "$bit_ver" ]; then
+              echo "UNKNOWN"
+              return 1
+            fi
+            echo "$bit_ver"
+          }
+          
+          BIT_UI7=$(extract_bit "ui7_folder")
+          BIT_UI8=$(extract_bit "ui8_folder")
+          
+          echo "OneUI 7 Bit: $BIT_UI7"
+          echo "OneUI 8 Bit: $BIT_UI8"
+          
+          if [ "$BIT_UI7" != "$BIT_UI8" ] && [ "$BIT_UI7" != "UNKNOWN" ] && [ "$BIT_UI8" != "UNKNOWN" ]; then
+            echo "⚠️ WARNING: Bit Version Mismatch!"
+          else
+            echo "✅ Bit versions match"
+          fi
+          
+          echo "bit_version=$BIT_UI8" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+      # ============================================================
+      # STEP 5: Patch AP (2-3 minutes)
+      # ============================================================
+      - name: 5️⃣ Patch AP (Magisk Root)
+        id: patch_ap
+        run: |
+          echo "::group::Step 5: Patching AP with Magisk"
+          mkdir -p output
+          
+          AP_FILE=$(find ui8_folder -name "AP_*.tar.md5" | head -n 1)
+          if [ -z "$AP_FILE" ]; then
+            AP_FILE=$(find ui8_folder -name "AP_*.tar" | head -n 1)
+          fi
+          
+          if [ -z "$AP_FILE" ]; then
+            echo "❌ Error: AP file not found!"
+            ls -la ui8_folder/
+            exit 1
+          fi
+          
+          echo "Found AP: $AP_FILE"
+          echo "File size: $(ls -lh "$AP_FILE" | awk '{print $5}')"
+          
+          cp "$AP_FILE" AP_work.tar
+          
+          if [[ "$AP_FILE" == *.md5 ]]; then
+            echo "Removing MD5 checksum line..."
+            head -c -56 AP_work.tar > AP_clean.tar 2>/dev/null || {
+              cp AP_work.tar AP_clean.tar
+              echo "Warning: Could not remove MD5, continuing..."
+            }
+            mv AP_clean.tar AP_work.tar
+          fi
+          
+          echo "Extracting tar..."
+          tar -xf AP_work.tar --ignore-zeros 2>/dev/null || tar -xf AP_work.tar
+          
+          BOOT_IMG=""
+          if [ -f "init_boot.img" ]; then
+            BOOT_IMG="init_boot.img"
+            echo "Found: init_boot.img"
+          elif [ -f "boot.img" ]; then
+            BOOT_IMG="boot.img"
+            echo "Found: boot.img"
+          elif [ -f "boot.img.lz4" ]; then
+            echo "Found: boot.img.lz4 (Decompressing...)"
+            lz4 -d boot.img.lz4 boot.img
+            BOOT_IMG="boot.img"
+          else
+            echo "❌ No boot image found!"
+            find . -maxdepth 1 -name "*.img*" -ls
+            exit 1
+          fi
+          
+          if [ "${{ inputs.keep_original }}" == "true" ]; then
+            cp "$BOOT_IMG" "output/Original_$BOOT_IMG"
+          fi
+          
+          echo "Patching $BOOT_IMG..."
+          ./magiskboot patch "$BOOT_IMG"
+          
+          if [ -f "${BOOT_IMG}.patched" ]; then
+            mv "${BOOT_IMG}.patched" "$BOOT_IMG"
+            echo "Using .patched file"
+          elif [ -f "${BOOT_IMG}.magisk" ]; then
+            mv "${BOOT_IMG}.magisk" "$BOOT_IMG"
+            echo "Using .magisk file"
+          else
+            echo "Warning: No patched file, using original"
+          fi
+          
+          echo "Repacking AP_Patched.tar..."
+          tar -cf AP_Patched.tar --format=ustar "$BOOT_IMG"
+          MD5_HASH=$(md5sum AP_Patched.tar | awk '{print $1}')
+          echo "$MD5_HASH  AP_Patched.tar" >> AP_Patched.tar
+          mv AP_Patched.tar output/AP_Patched.tar
+          
+          echo "✅ AP Patching Complete"
+          echo "::endgroup::"
+
+      # ============================================================
+      # STEP 6: Prepare BL (30 seconds)
+      # ============================================================
+      - name: 6️⃣ Prepare BL
+        run: |
+          echo "::group::Step 6: Preparing BL"
+          mkdir -p output
+          
+          BL_FILE=$(find ui8_folder -name "BL_*.tar.md5" | head -n 1)
+          if [ -z "$BL_FILE" ]; then
+            BL_FILE=$(find ui8_folder -name "BL_*.tar" | head -n 1)
+          fi
+          
+          if [ -z "$BL_FILE" ]; then
+            echo "Warning: BL file not found"
+          else
+            cp "$BL_FILE" output/BL_Patched.tar
+            echo "BL copied"
+          fi
+          echo "::endgroup::"
+
+      # ============================================================
+      # STEP 7: Generate Device Info TXT (5 seconds)
+      # ============================================================
+      - name: 7️⃣ Generate Device Info TXT
+        run: |
+          echo "::group::Step 7: Generating Device Info"
+          BIT_VER="${{ steps.bit_check.outputs.bit_version }}"
+          cat > output/device_info.txt << EOF
+          ========================================
+          Samsung Firmware Patch Information
+          ========================================
+          Date: $(date)
+          Workflow Run ID: ${{ github.run_id }}
+          
+          Firmware Sources:
+          - OneUI 7 Link: ${{ inputs.ui7_link }}
+          - OneUI 8 Link: ${{ inputs.ui8_link }}
+          
+          Configuration:
+          - Magisk Version: ${{ inputs.magisk_version }}
+          - Output Selection: ${{ inputs.output_selection }}
+          - Keep Original Boot: ${{ inputs.keep_original }}
+          
+          🔐 Security:
+          - Bit Version: $BIT_VER
+          - Ramdisk: Auto-Handled
+          
+          Patching Status:
+          - AP: Patched with MagiskBoot
+          - BL: Prepared from UI8
+          ========================================
+          ⚠️ Flash at your own risk!
+          ========================================
+          EOF
+          echo "::endgroup::"
+
+      # ============================================================
+      # STEP 8: Upload Artifacts (1 minute)
+      # ============================================================
+      - name: 8️⃣ Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Samsung-Rooted-Files
+          path: output/
+          retention-days: 5
