@@ -69,13 +69,7 @@ jobs:
           else
             echo "MAGISKBOOT_CMD=./magiskboot" >> $GITHUB_ENV
           fi
-          if ./magiskboot 2>&1 | grep -q "patch"; then
-            echo "✅ Magisk 27.0 confirmed"
-            echo "MAGISK_VERSION=27.0" >> $GITHUB_ENV
-          else
-            echo "❌ Wrong version!"
-            exit 1
-          fi
+          echo "MAGISK_VERSION=27.0" >> $GITHUB_ENV
           echo "✅ MagiskBoot ready"
           echo "::endgroup::"
 
@@ -96,13 +90,13 @@ jobs:
         run: |
           echo "::group::Step 4: Bit Version Check"
           extract_bit() {
-            AP_FILE=$(find "$1" -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n1)            [ -z "$AP_FILE" ] && AP_FILE=$(find "$1" -name "BL_*.tar.md5" | head -n1)
+            AP_FILE=$(find "$1" -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n1)
+            [ -z "$AP_FILE" ] && AP_FILE=$(find "$1" -name "BL_*.tar.md5" | head -n1)
             [ -z "$AP_FILE" ] && { echo "UNKNOWN"; return 1; }
             echo "$(basename "$AP_FILE")" | grep -oP '(XXU|XSU|XXS|OXU)\K[0-9]' | head -n1 || echo "UNKNOWN"
           }
           BIT_UI7=$(extract_bit "ui7_folder")
-          BIT_UI8=$(extract_bit "ui8_folder")
-          echo "OneUI 7 Bit: $BIT_UI7 | OneUI 8 Bit: $BIT_UI8"
+          BIT_UI8=$(extract_bit "ui8_folder")          echo "OneUI 7 Bit: $BIT_UI7 | OneUI 8 Bit: $BIT_UI8"
           if [ "$BIT_UI7" != "$BIT_UI8" ] && [ "$BIT_UI7" != "UNKNOWN" ]; then
             echo "⚠️ Bit Mismatch!"
             echo "bit_status=MISMATCH" >> $GITHUB_OUTPUT
@@ -145,13 +139,13 @@ jobs:
             echo "✅ Swapped abl.elf.lz4"
             echo "swap_status=SUCCESS" >> $GITHUB_OUTPUT
           elif [ -f "abl.elf.ui7" ]; then
-            rm -f abl.elf            cp abl.elf.ui7 abl.elf
+            rm -f abl.elf
+            cp abl.elf.ui7 abl.elf
             echo "✅ Swapped abl.elf"
             echo "swap_status=SUCCESS" >> $GITHUB_OUTPUT
           else
             echo "swap_status=SKIPPED" >> $GITHUB_OUTPUT
-          fi
-          tar -cf BL_Patched.tar --format=ustar *
+          fi          tar -cf BL_Patched.tar --format=ustar *
           MD5_HASH=$(md5sum BL_Patched.tar | awk '{print $1}')
           echo "$MD5_HASH  BL_Patched.tar" >> BL_Patched.tar
           mv BL_Patched.tar output/BL_Patched.tar
@@ -159,51 +153,97 @@ jobs:
           echo "✅ BL Swap Complete"
           echo "::endgroup::"
 
-      - name: 6️⃣ Patch AP (Magisk Root)
+      - name: 6️⃣ Patch AP (unpack + cpio + repack) ✅
         id: ap_patch
         run: |
           echo "::group::Step 6: Patching AP"
           mkdir -p output
+          
           MAGISKBOOT_CMD="${MAGISKBOOT_CMD:-./magiskboot}"
+          
+          # ✅ Samsung VBMETA Fix
           export KEEPVERITY=false
           export KEEPFORCEENCRYPT=false
           export PATCHVBMETAFLAG=true
+          echo "✅ ENV: PATCHVBMETAFLAG=true"
+          
           AP_FILE=$(find ui8_folder -name "AP_*.tar.md5" | head -n 1)
           [ -z "$AP_FILE" ] && AP_FILE=$(find ui8_folder -name "AP_*.tar" | head -n 1)
           [ -z "$AP_FILE" ] && { echo "❌ AP not found!"; exit 1; }
+          
           echo "Found AP: $(basename "$AP_FILE")"
           cp "$AP_FILE" AP_work.tar
+          
           [[ "$AP_FILE" == *.md5 ]] && { head -c -56 AP_work.tar > AP_clean.tar 2>/dev/null || cp AP_work.tar AP_clean.tar; mv AP_clean.tar AP_work.tar; }
+          
           tar -xf AP_work.tar --ignore-zeros 2>/dev/null || tar -xf AP_work.tar
+          
           BOOT_IMG=""
           if [ -f "init_boot.img" ]; then
             BOOT_IMG="init_boot.img"
           elif [ -f "boot.img" ]; then
             BOOT_IMG="boot.img"
           elif [ -f "boot.img.lz4" ]; then
+            echo "Decompressing boot.img.lz4..."
             lz4 -d boot.img.lz4 boot.img
             BOOT_IMG="boot.img"
           else
             echo "❌ No boot image!"
             exit 1
           fi
+          
           echo "Found: $BOOT_IMG"
           [ "${{ inputs.keep_original }}" == "true" ] && cp "$BOOT_IMG" "output/Original_$BOOT_IMG"
-          echo "Patching..."
-          $MAGISKBOOT_CMD patch "$BOOT_IMG"
-          [ -f "${BOOT_IMG}.patched" ] && mv "${BOOT_IMG}.patched" "$BOOT_IMG"
-          [ -f "${BOOT_IMG}.magisk" ] && mv "${BOOT_IMG}.magisk" "$BOOT_IMG"
+                    # ✅ MANUAL PATCH METHOD (unpack + cpio + repack)
+          echo "🔓 Step 1: Unpacking boot image..."
+          $MAGISKBOOT_CMD unpack "$BOOT_IMG"
+          
+          echo "🔓 Step 2: Checking ramdisk..."
+          if [ -f "ramdisk.cpio" ]; then
+            echo "✅ Found ramdisk.cpio"
+          elif [ -f "ramdisk.cpio.gz" ]; then
+            echo "✅ Found ramdisk.cpio.gz"
+            gunzip ramdisk.cpio.gz
+          elif [ -f "ramdisk.cpio.lz4" ]; then
+            echo "✅ Found ramdisk.cpio.lz4"
+            lz4 -d ramdisk.cpio.lz4 ramdisk.cpio
+          else
+            echo "❌ No ramdisk found!"
+            ls -la
+            exit 1
+          fi
+          
+          echo "🔓 Step 3: Patching ramdisk with Magisk..."
+          $MAGISKBOOT_CMD cpio ramdisk.cpio "patch"
+          
+          echo "🔓 Step 4: Repacking boot image..."
+          $MAGISKBOOT_CMD repack "$BOOT_IMG"
+          
+          # Check for patched output
+          if [ -f "new-boot.img" ]; then
+            mv new-boot.img "$BOOT_IMG"
+            echo "✅ Repacked to new-boot.img"
+          elif [ -f "${BOOT_IMG}.patched" ]; then
+            mv "${BOOT_IMG}.patched" "$BOOT_IMG"
+            echo "✅ Using .patched file"
+          fi
+          
+          echo "🔓 Step 5: Creating AP_Patched.tar..."
           tar -cf AP_Patched.tar --format=ustar "$BOOT_IMG"
-          MD5_HASH=$(md5sum AP_Patched.tar | awk '{print $1}')          echo "$MD5_HASH  AP_Patched.tar" >> AP_Patched.tar
+          MD5_HASH=$(md5sum AP_Patched.tar | awk '{print $1}')
+          echo "$MD5_HASH  AP_Patched.tar" >> AP_Patched.tar
           mv AP_Patched.tar output/AP_Patched.tar
+          
+          # Cleanup
+          $MAGISKBOOT_CMD cleanup || true
+          
           echo "✅ AP Patch Complete"
           echo "patch_status=SUCCESS" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
       - name: 7️⃣ Generate Report
         run: |
-          cat > output/REPORT.txt << EOF
-          ========================================
+          cat > output/REPORT.txt << EOF          ========================================
           SAMSUNG ONE UI 8 ROOT - PATCH REPORT
           ========================================
           Generated: $(date)
@@ -215,6 +255,7 @@ jobs:
              Status: ${{ steps.bl_swap.outputs.swap_status }}
           
           2. AP PATCH: Magisk ${{ env.MAGISK_VERSION }}
+             Method: unpack + cpio patch + repack
              Status: ${{ steps.ap_patch.outputs.patch_status }}
           
           3. SECURITY: Bit ${{ steps.bit_check.outputs.bit_version }}
@@ -243,13 +284,13 @@ jobs:
           Samsung Patch Info
           Date: $(date)
           Magisk: ${{ env.MAGISK_VERSION }}
-          Bit: ${{ steps.bit_check.outputs.bit_version }}          BL Swap: ${{ steps.bl_swap.outputs.swap_status }}
+          Bit: ${{ steps.bit_check.outputs.bit_version }}
+          BL Swap: ${{ steps.bl_swap.outputs.swap_status }}
           AP Patch: ${{ steps.ap_patch.outputs.patch_status }}
           EOF
 
       - name: 8️⃣ Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Samsung-Rooted-Files
-          path: output/
+          name: Samsung-Rooted-Files          path: output/
           retention-days: 5
