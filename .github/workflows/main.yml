@@ -188,7 +188,7 @@ jobs:
           echo "::endgroup::"
 
       # ============================================================
-      # STEP 6: AP Patch (Magisk 26.3 + vbmeta) - AUTO RAMDISK ✅
+      # STEP 6: AP Patch (Magisk 26.3 + vbmeta) - FIXED RAMDISK ✅
       # ============================================================
       - name: 6️⃣ Patch AP (Magisk + vbmeta)
         id: ap_patch
@@ -215,10 +215,10 @@ jobs:
           BOOT_IMG=""
           if [ -f "init_boot.img" ]; then
             BOOT_IMG="init_boot.img"
-            echo "📱 Found: init_boot.img (Newer Samsung)"
+            echo "📱 Found: init_boot.img"
           elif [ -f "boot.img" ]; then
             BOOT_IMG="boot.img"
-            echo "📱 Found: boot.img (Older Samsung)"
+            echo "📱 Found: boot.img"
           elif [ -f "boot.img.lz4" ]; then
             lz4 -d boot.img.lz4 boot.img
             BOOT_IMG="boot.img"
@@ -243,8 +243,13 @@ jobs:
           echo "📦 Step 1: Unpacking boot image..."
           $MAGISKBOOT_CMD unpack "$BOOT_IMG"
           
+          # Show what files were created
+          echo ""
+          echo "📋 Unpacked files:"
+          ls -la *.cpio* *.img *.dtb 2>/dev/null || echo "(checking files...)"
+          
           # ============================================================
-          # AUTO RAMDISK DETECTION ✅
+          # AUTO RAMDISK DETECTION & DECOMPRESS ✅
           # ============================================================
           echo ""
           echo "🔍 Step 2: Auto-detecting ramdisk..."
@@ -252,71 +257,76 @@ jobs:
           RAMDISK_FOUND=false
           RAMDISK_FILE=""
           
-          # Check all possible ramdisk formats
+          # MagiskBoot unpack creates ramdisk.cpio.lz4 for lz4_legacy format
+          # We need to check ALL possible formats and decompress
+          
           if [ -f "ramdisk.cpio" ]; then
             RAMDISK_FOUND=true
             RAMDISK_FILE="ramdisk.cpio"
-            echo "✅ Found: ramdisk.cpio"
-          elif [ -f "ramdisk.cpio.gz" ]; then
-            RAMDISK_FOUND=true
-            RAMDISK_FILE="ramdisk.cpio.gz"
-            echo "✅ Found: ramdisk.cpio.gz (decompressing...)"
-            gunzip -f ramdisk.cpio.gz
-            RAMDISK_FILE="ramdisk.cpio"
+            echo "✅ Found: ramdisk.cpio (uncompressed)"
           elif [ -f "ramdisk.cpio.lz4" ]; then
-            RAMDISK_FOUND=true
-            RAMDISK_FILE="ramdisk.cpio.lz4"
             echo "✅ Found: ramdisk.cpio.lz4 (decompressing...)"
             lz4 -d ramdisk.cpio.lz4 ramdisk.cpio
-            RAMDISK_FILE="ramdisk.cpio"
-          elif [ -f "ramdisk.cpio.bz2" ]; then
-            RAMDISK_FOUND=true
-            RAMDISK_FILE="ramdisk.cpio.bz2"
-            echo "✅ Found: ramdisk.cpio.bz2 (decompressing...)"
-            bunzip2 -f ramdisk.cpio.bz2
-            RAMDISK_FILE="ramdisk.cpio"
-          elif [ -f "ramdisk.cpio.xz" ]; then
-            RAMDISK_FOUND=true
-            RAMDISK_FILE="ramdisk.cpio.xz"
-            echo "✅ Found: ramdisk.cpio.xz (decompressing...)"
-            xz -d ramdisk.cpio.xz
-            RAMDISK_FILE="ramdisk.cpio"
+            if [ -f "ramdisk.cpio" ] && [ -s "ramdisk.cpio" ]; then
+              RAMDISK_FOUND=true
+              RAMDISK_FILE="ramdisk.cpio"
+              echo "✅ Decompressed successfully!"
+            else
+              echo "❌ Decompression failed!"
+            fi
+          elif [ -f "ramdisk.cpio.gz" ]; then
+            echo "✅ Found: ramdisk.cpio.gz (decompressing...)"
+            gunzip -f ramdisk.cpio.gz
+            if [ -f "ramdisk.cpio" ]; then
+              RAMDISK_FOUND=true
+              RAMDISK_FILE="ramdisk.cpio"
+              echo "✅ Decompressed successfully!"
+            fi
+          elif [ -f "ramdisk.cpio.lz4_legacy" ]; then
+            echo "✅ Found: ramdisk.cpio.lz4_legacy (decompressing...)"
+            lz4 -d ramdisk.cpio.lz4_legacy ramdisk.cpio
+            if [ -f "ramdisk.cpio" ]; then
+              RAMDISK_FOUND=true
+              RAMDISK_FILE="ramdisk.cpio"
+              echo "✅ Decompressed successfully!"
+            fi
           else
-            echo "⚠️ No ramdisk found! (Some devices don't have separate ramdisk)"
-            echo "ℹ️ Will patch boot image without ramdisk modification"
+            echo "⚠️ No ramdisk found!"
+            echo "ℹ️ Some devices use init_boot instead of ramdisk"
           fi
           
           # ============================================================
-          # PATCH RAMDISK (IF EXISTS)
+          # PATCH RAMDISK (IF EXISTS) ✅
           # ============================================================
-          if [ "$RAMDISK_FOUND" = true ] && [ -f "$RAMDISK_FILE" ]; then
+          if [ "$RAMDISK_FOUND" = true ] && [ -f "$RAMDISK_FILE" ] && [ -s "$RAMDISK_FILE" ]; then
             echo ""
             echo "🔓 Step 3: Patching ramdisk (Magisk)..."
+            echo "File: $RAMDISK_FILE"
+            echo "Size: $(ls -lh "$RAMDISK_FILE" | awk '{print $5}')"
             
-            # Verify file exists and has content
-            if [ -s "$RAMDISK_FILE" ]; then
-              $MAGISKBOOT_CMD cpio "$RAMDISK_FILE" \
-                "add 0750 init.real init" \
-                "add 0750 init init" \
-                "mkdir 0750 overlay.d" \
-                "mkdir 0750 overlay.d/sbin" \
-                "add 0750 overlay.d/sbin/magiskboot magiskboot" \
-                "add 0750 overlay.d/sbin/magiskpolicy magiskpolicy" \
-                "patch" \
-                "backup" \
-                "sha1"
-              
-              if [ $? -eq 0 ]; then
-                echo "✅ Ramdisk patched successfully!"
-              else
-                echo "⚠️ Ramdisk patch had warnings, continuing..."
-              fi
+            # Run magiskboot cpio patch
+            $MAGISKBOOT_CMD cpio "$RAMDISK_FILE" \
+              "add 0750 init.real init" \
+              "add 0750 init init" \
+              "mkdir 0750 overlay.d" \
+              "mkdir 0750 overlay.d/sbin" \
+              "add 0750 overlay.d/sbin/magiskboot magiskboot" \
+              "add 0750 overlay.d/sbin/magiskpolicy magiskpolicy" \
+              "patch" \
+              "backup" \
+              "sha1"
+            
+            PATCH_RESULT=$?
+            if [ $PATCH_RESULT -eq 0 ]; then
+              echo "✅ Ramdisk patched successfully!"
             else
-              echo "⚠️ Ramdisk file is empty, skipping patch..."
+              echo "⚠️ Ramdisk patch returned: $PATCH_RESULT"
+              echo "ℹ️ Continuing anyway..."
             fi
           else
             echo ""
-            echo "⚠️ Skipping ramdisk patch (no ramdisk found)"
+            echo "⚠️ Skipping ramdisk patch (no valid ramdisk found)"
+            echo "ℹ️ Boot image will be repacked without ramdisk modification"
           fi
           
           # ============================================================
@@ -327,13 +337,11 @@ jobs:
           export PATCHVBMETAFLAG=true
           echo "✅ PATCHVBMETAFLAG enabled"
           
-          # Patch dtb if exists
           if [ -f "dtb" ]; then
             echo "📋 Step 5: Patching dtb (fstab)..."
             $MAGISKBOOT_CMD dtb dtb patch && echo "✅ dtb patched" || echo "⚠️ dtb patch skipped"
           fi
           
-          # Patch extra if exists
           if [ -f "extra" ]; then
             echo "📋 Step 6: Patching extra..."
             $MAGISKBOOT_CMD dtb extra patch && echo "✅ extra patched" || echo "⚠️ extra patch skipped"
@@ -353,7 +361,7 @@ jobs:
             echo "⚠️ Repack failed, using original boot image"
           fi
           
-          # Cleanup unpacked files
+          # Cleanup
           $MAGISKBOOT_CMD cleanup 2>/dev/null || true
           
           # Repack AP
