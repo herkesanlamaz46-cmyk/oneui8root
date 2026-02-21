@@ -1,4 +1,4 @@
-name: Samsung One UI 8 Root (Final & Stable)
+name: Samsung One UI 8 Root (Full Verbose & Stable)
 
 on:
   workflow_dispatch:
@@ -27,9 +27,11 @@ jobs:
       - name: 1 Setup Environment
         run: |
           echo "::group::Step 1: Environment Setup"
+          set -x # Komutları loglarda açıkça göster
           sudo apt-get update
           sudo apt-get install -y lz4 unzip wget curl tar openssl qemu-user-static file
-          mkdir -p work output ui7_folder ui8_folder
+          mkdir -pv work output ui7_folder ui8_folder
+          set +x
           echo "Environment ready."
           echo "::endgroup::"
 
@@ -37,35 +39,24 @@ jobs:
         run: |
           echo "::group::Step 2: Downloading MagiskBoot"
           APK_URL="https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk"
-          wget -q --show-progress --progress=dot:giga "$APK_URL" -O magisk.apk 2>&1
-          
-          mkdir -p temp_mb
-          unzip -o magisk.apk "lib/arm64-v8a/libmagiskboot.so" -d temp_mb
-          cp temp_mb/lib/arm64-v8a/libmagiskboot.so ./magiskboot
-          chmod +x magiskboot
-          
-          if echo "$(file magiskboot)" | grep -q "AArch64"; then
-            echo "MAGISKBOOT_CMD=qemu-aarch64-static ./magiskboot" >> $GITHUB_ENV
-          else
-            echo "MAGISKBOOT_CMD=./magiskboot" >> $GITHUB_ENV
-          fi
-          echo "MAGISK_VERSION=27.0" >> $GITHUB_ENV
-          rm -rf temp_mb magisk.apk
+          wget -q --show-progress "$APK_URL" -O magisk.apk 2>&1
+          unzip -j magisk.apk "lib/arm64-v8a/libmagiskboot.so" -d .
+          mv -v libmagiskboot.so magiskboot
+          chmod -v +x magiskboot
+          echo "MagiskBoot prepared."
           echo "::endgroup::"
 
       - name: 3 Download Firmware
         run: |
           echo "::group::Step 3: Downloading Firmware"
-          echo "Downloading OneUI 7..."
-          wget --progress=dot:giga --show-progress -O ui7.zip "${{ inputs.ui7_link }}" 2>&1
+          echo "OneUI 7 İndiriliyor..."
+          wget --progress=dot:mega --show-progress -O ui7.zip "${{ inputs.ui7_link }}" 2>&1
+          echo "OneUI 8 İndiriliyor..."
+          wget --progress=dot:mega --show-progress -O ui8.zip "${{ inputs.ui8_link }}" 2>&1
           
-          echo "Downloading OneUI 8..."
-          wget --progress=dot:giga --show-progress -O ui8.zip "${{ inputs.ui8_link }}" 2>&1
-          
-          echo "Extracting (Parallel)..."
-          unzip -q -o ui7.zip -d ui7_folder &
-          unzip -q -o ui8.zip -d ui8_folder &
-          wait
+          echo "Arşivler Ayıklanıyor..."
+          unzip -o ui7.zip -d ui7_folder
+          unzip -o ui8.zip -d ui8_folder
           echo "Extraction complete."
           echo "::endgroup::"
 
@@ -75,55 +66,65 @@ jobs:
           echo "::group::Step 4: Bit Version Check"
           AP7=$(find ui7_folder -name "AP_*.tar*" | head -n1)
           AP8=$(find ui8_folder -name "AP_*.tar*" | head -n1)
-          
           BIT7=$(basename "$AP7" | grep -oP '(XXU|XSU|XXS|OXU)\K[0-9]' | head -n1 || echo "U")
           BIT8=$(basename "$AP8" | grep -oP '(XXU|XSU|XXS|OXU)\K[0-9]' | head -n1 || echo "U")
-          
           echo "UI7 Bit: $BIT7 | UI8 Bit: $BIT8"
           echo "bit_version=$BIT8" >> $GITHUB_OUTPUT
           [ "$BIT7" == "$BIT8" ] && echo "bit_status=MATCH" >> $GITHUB_OUTPUT || echo "bit_status=MISMATCH" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
-      - name: 5 BL Swap (ABL Injection)
+      - name: 5 BL Swap (Full Verbose)
         id: bl_swap
         run: |
-          echo "::group::Step 5: Bootloader Swap"
+          echo "::group::Step 5: Bootloader Swap Process"
+          set -x
           BL7=$(find ui7_folder -name "BL_*.tar*" | head -n1)
           BL8=$(find ui8_folder -name "BL_*.tar*" | head -n1)
           
-          # UI7'den ABL'yi al ve güvenli yere taşı
-          cp "$BL7" bl7.tar && truncate -s -56 bl7.tar
-          tar -xf bl7.tar -C work --wildcards "abl.elf*" 2>/dev/null || tar -xf bl7.tar -C work
-          mv work/abl.elf* ./saved_abl.lz4
+          # UI7 ABL Hazırlığı
+          cp -v "$BL7" bl7.tar
+          truncate -s -56 bl7.tar
+          tar -xvf bl7.tar -C work --wildcards "abl.elf*" || tar -xvf bl7.tar -C work
+          mv -v work/abl.elf* ./saved_abl.lz4
           
-          # UI8'i hazırla
-          rm -rf work/*
-          cp "$BL8" bl8.tar && truncate -s -56 bl8.tar
-          tar -xf bl8.tar -C work
+          # UI8 BL Hazırlığı
+          rm -rfv work/*
+          cp -v "$BL8" bl8.tar
+          truncate -s -56 bl8.tar
+          tar -xvf bl8.tar -C work
           
-          # Swap yap
-          rm -f work/abl.elf*
-          mv ./saved_abl.lz4 work/abl.elf.lz4 2>/dev/null || mv ./saved_abl.lz4 work/abl.elf
+          # Swap İşlemi
+          rm -fv work/abl.elf*
+          mv -v ./saved_abl.lz4 work/abl.elf.lz4
           
-          # Paketle
-          cd work && tar -cf ../output/BL_Patched.tar * && cd ..
+          # Paketleme
+          cd work
+          tar -cvf ../output/BL_Patched.tar *
+          cd ..
+          set +x
           echo "swap_status=SUCCESS" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
-      - name: 6 Patch AP (Magisk Engine)
+      - name: 6 Patch AP (Full Verbose)
         id: ap_patch
         run: |
-          echo "::group::Step 6: AP & Magisk Patching"
+          echo "::group::Step 6: AP & Magisk Patching Process"
+          set -x
           AP8=$(find ui8_folder -name "AP_*.tar*" | head -n1)
-          cp "$AP8" ap.tar && truncate -s -56 ap.tar
-          rm -rf work/* && tar -xf ap.tar -C work
+          cp -v "$AP8" ap.tar
+          truncate -s -56 ap.tar
+          rm -rfv work/*
+          tar -xvf ap.tar -C work
+          
+          # Magiskboot'u çalışma dizinine taşı
+          cp -v magiskboot work/
           cd work
           
-          IMG=""
+          # Dosya tespiti ve LZ4 açma
           for f in init_boot.img.lz4 boot.img.lz4 init_boot.img boot.img; do
             if [ -f "$f" ]; then
               if [[ "$f" == *.lz4 ]]; then
-                lz4 -d "$f" "${f%.lz4}"
+                lz4 -dv "$f" "${f%.lz4}"
                 IMG="${f%.lz4}"
               else
                 IMG="$f"
@@ -133,34 +134,34 @@ jobs:
           done
 
           if [ "${{ inputs.skip_magisk }}" != "true" ] && [ -n "$IMG" ]; then
-             $MAGISKBOOT_CMD unpack "$IMG"
-             $MAGISKBOOT_CMD cpio ramdisk.cpio "patch"
-             $MAGISKBOOT_CMD repack "$IMG"
-             mv new-boot.img "$IMG"
+             echo "Yamalama Başlatılıyor: $IMG"
+             qemu-aarch64-static ./magiskboot unpack "$IMG"
+             qemu-aarch64-static ./magiskboot cpio ramdisk.cpio "patch"
+             qemu-aarch64-static ./magiskboot repack "$IMG"
+             mv -v new-boot.img "$IMG"
              echo "patch_status=SUCCESS" >> $GITHUB_OUTPUT
           else
              echo "patch_status=SKIPPED" >> $GITHUB_OUTPUT
           fi
 
-          [ -f vbmeta.img.lz4 ] && lz4 -d vbmeta.img.lz4 vbmeta.img
-          tar -cf ../output/AP_Patched.tar "$IMG" vbmeta.img*
+          [ -f vbmeta.img.lz4 ] && lz4 -dv vbmeta.img.lz4 vbmeta.img
+          tar -cvf ../output/AP_Patched.tar "$IMG" vbmeta.img*
           cd ..
+          set +x
           echo "::endgroup::"
 
       - name: 7 Final Report
         run: |
-          echo "::group::Step 7: Generating Report"
+          echo "::group::Step 7: Final Summary"
           cat << EOF > output/REPORT.txt
-          SAMSUNG ONE UI 8 ROOT REPORT
-          ============================
-          Bit Version: ${{ steps.bit_check.outputs.bit_version }} (${{ steps.bit_check.outputs.bit_status }})
+          ====================================
+          SAMSUNG ONE UI 8 ROOT PATCH COMPLETE
+          ====================================
+          Bit Version: ${{ steps.bit_check.outputs.bit_version }}
+          Bit Match: ${{ steps.bit_check.outputs.bit_status }}
           BL Swap: ${{ steps.bl_swap.outputs.swap_status }}
           AP Magisk: ${{ steps.ap_patch.outputs.patch_status }}
-          
-          FLASHING:
-          1. Odin BL -> BL_Patched.tar
-          2. Odin AP -> AP_Patched.tar
-          ============================
+          ====================================
           EOF
           cat output/REPORT.txt
           echo "::endgroup::"
@@ -168,6 +169,6 @@ jobs:
       - name: 8 Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OneUI8-Root-Pack
+          name: Samsung-OneUI8-Root-Pack
           path: output/
           retention-days: 3
