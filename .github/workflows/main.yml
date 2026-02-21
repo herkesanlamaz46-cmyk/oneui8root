@@ -1,0 +1,93 @@
+name: Samsung One UI 8 Root
+
+on:
+  workflow_dispatch:
+    inputs:
+      ui7_link:
+        description: 'OneUI 7 Firmware Direct Link (.zip)'
+        required: true
+        type: string
+      ui8_link:
+        description: 'OneUI 8 Firmware Direct Link (.zip)'
+        required: true
+        type: string
+      magisk_version:
+        description: 'Select Magisk Version'
+        required: false
+        default: '27.0'
+        type: choice
+        options:
+          - '27.0'
+          - '26.4'
+          - '25.2'
+          - '24.3'
+      skip_ramdisk:
+        description: 'Skip Ramdisk Patch (Special Kernels)'
+        required: false
+        default: false
+        type: boolean
+      output_selection:
+        description: 'Choose Output Files'
+        required: false
+        default: 'Both (BL + AP)'
+        type: choice
+        options:
+          - 'Both (BL + AP)'
+          - 'BL Only'
+          - 'AP Only'
+      keep_original:
+        description: 'Keep Original Boot Image'
+        required: false
+        default: false
+        type: boolean
+      debug_mode:
+        description: 'Enable Debug Logs'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  patch-firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lz4 openssl unzip wget curl
+          echo "Environment Ready"
+
+      - name: Download Firmware
+        run: |
+          echo "Downloading OneUI 7..."
+          wget "${{ inputs.ui7_link }}" -O ui7.zip || echo "Download UI7 Failed"
+          echo "Downloading OneUI 8..."
+          wget "${{ inputs.ui8_link }}" -O ui8.zip || echo "Download UI8 Failed"
+          unzip -o ui7.zip -d ui7_folder
+          unzip -o ui8.zip -d ui8_folder
+
+      - name: Patching Process (Magisk & BL Swap)
+        run: |
+          echo "Starting Patch Process..."
+          echo "Magisk Version: ${{ inputs.magisk_version }}"
+          echo "Skip Ramdisk: ${{ inputs.skip_ramdisk }}"
+          echo "Output: ${{ inputs.output_selection }}"
+          
+          # BURAYA GERÇEK PATCHLEME SKRİPTLERİ GELECEK
+          # Şimdilik dosya oluşumu simüle ediliyor ki inputlar çalıştığını görelim
+          mkdir -p output
+          echo "BL_Patched_Content" > output/BL_Patched.tar
+          echo "AP_Patched_Content" > output/AP_Patched.tar
+          
+          if [ "${{ inputs.keep_original }}" == "true" ]; then
+            echo "Keeping original boot images..."
+          fi
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Samsung-Rooted-Files
+          path: output/
+          retention-days: 5
