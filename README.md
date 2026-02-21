@@ -95,11 +95,6 @@ GitHub Actions runners have a strict **storage limit of roughly 5GB to 14GB** (d
 
 ---
 
-## 📄 License
-This project is licensed under the **MIT License**. However, the firmware files processed by this tool remain the property of **Samsung Electronics**.
-
----
-
 ## 🙏 Credits
 
 - **Magisk**: [topjohnwu](https://github.com/topjohnwu/Magisk)
