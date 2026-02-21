@@ -24,12 +24,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4  # Güncellendi
+        uses: actions/checkout@v4
 
+      # ✅ DÜZELTME: Gereksiz android-sdk paketi kaldırıldı, sadece gerekli olanlar kuruluyor.
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y lz4 unzip wget tar android-sdk-platform-tools-core p7zip-full
+          sudo apt-get install -y lz4 unzip wget tar p7zip-full cpio
 
       - name: Download Firmwares
         run: |
@@ -46,11 +47,68 @@ jobs:
           unzip -q ui7.zip -d ui7/
           unzip -q ui8.zip -d ui8/
           
+          UI7_BL=$(find ui7 -name "BL_Hata mesajı çok net: `android-sdk-platform-tools-core` paketi Ubuntu'nun yeni sürümünde (Noble 24.04) bu isimle bulunamıyor veya depo adları değişmiş.
+Bunu düzeltmek için **paket ismini değiştireceğiz** veya **gerekli araçları manuel kuracağız**. Samsung firmware işlemleri için asıl ihtiyacımız olan araçlar `lz4`, `unzip`, `wget`, `tar` ve `p7zip`'tir. `android-sdk` paketine aslında gerek yok, onu kaldırıp işlemi hızlandıralım ve hatayı çözelim.
+
+Aşağıdaki **düzeltilmiş kodu** kopyala ve `.github/workflows/samsung-patcher.yml` dosyanın içindekilerin **tamamıyla değiştir**:
+
+```yaml
+name: Samsung OneUI BL Swap & Root Patcher (Magisk 26.3)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ui7_bl_url:
+        description: 'OneUI 7 Firmware Direct Download Link (.zip)'
+        required: true
+        example: 'https://example.com/ui7.zip'
+      ui8_full_url:
+        description: 'OneUI 8 Firmware Direct Download Link (.zip)'
+        required: true
+        example: 'https://example.com/ui8.zip'
+      magisk_version:
+        description: 'Magisk Version'
+        required: true
+        default: '26.3'
+        type: choice
+        options:
+          - '26.3'
+
+jobs:
+  patch-firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ✅ DÜZELTME: Gereksiz android-sdk paketi kaldırıldı, sadece gerekli olanlar kuruluyor.
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lz4 unzip wget tar p7zip-full cpio
+
+      - name: Download Firmwares
+        run: |
+          echo "⬇️ Downloading OneUI 7..."
+          wget --no-check-certificate -O ui7.zip "${{ inputs.ui7_bl_url }}" || { echo "Error: Invalid UI7 Link"; exit 1; }
+          
+          echo "⬇️ Downloading OneUI 8..."
+          wget --no-check-certificate -O ui8.zip "${{ inputs.ui8_full_url }}" || { echo "Error: Invalid UI8 Link"; exit 1; }
+
+      - name: Extract Firmwares
+        run: |          mkdir -p ui7 ui8
+          echo "Extracting archives..."
+          unzip -q ui7.zip -d ui7/
+          unzip -q ui8.zip -d ui8/
+          
           UI7_BL=$(find ui7 -name "BL_*.tar.md5" -o -name "BL_*.tar" | head -n 1)
-          UI8_BL=$(find ui8 -name "BL_*.tar.md5" -o -name "BL_*.tar" | head -n 1)          UI8_AP=$(find ui8 -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n 1)
+          UI8_BL=$(find ui8 -name "BL_*.tar.md5" -o -name "BL_*.tar" | head -n 1)
+          UI8_AP=$(find ui8 -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n 1)
 
           if [ -z "$UI7_BL" ] || [ -z "$UI8_BL" ] || [ -z "$UI8_AP" ]; then
             echo "ERROR: Required BL or AP files not found inside ZIPs."
+            ls -R ui7
+            ls -R ui8
             exit 1
           fi
 
@@ -87,8 +145,7 @@ jobs:
           mkdir -p ap_work magisk_tools
           
           echo "📦 Extracting OneUI 8 AP..."
-          tar -xf "$UI8_AP" -C ap_work/
-          
+          tar -xf "$UI8_AP" -C ap_work/          
           BOOT_FILE=$(find ap_work -name "boot.img" -o -name "init_boot.img" | head -n 1)
           
           if [ -z "$BOOT_FILE" ]; then
@@ -96,7 +153,8 @@ jobs:
             exit 1
           fi
           
-          echo "Found Boot Image: $BOOT_FILE"          echo "BOOT_FILE=$BOOT_FILE" >> $GITHUB_ENV
+          echo "Found Boot Image: $BOOT_FILE"
+          echo "BOOT_FILE=$BOOT_FILE" >> $GITHUB_ENV
 
           echo "⬇️ Downloading MagiskBoot (Linux x64)..."
           wget -O magisk_tools/magiskboot https://github.com/HuskyDG/magiskboot-builds/releases/download/latest/magiskboot_linux_x86_64
@@ -119,7 +177,7 @@ jobs:
               "patch" \
               "backup .sha1"
           else
-            echo "⚠️ No ramdisk found, skipping cpio patch (might need manual intervention)."
+            echo "⚠️ No ramdisk found, skipping cpio patch."
           fi
           
           echo "🔨 Repacking..."
@@ -136,14 +194,14 @@ jobs:
       - name: Repack AP
         run: |
           cd ap_work
-          echo "📦 Repacking AP..."
-          tar -cvf ../Patched_AP.tar ./*
+          echo "📦 Repacking AP..."          tar -cvf ../Patched_AP.tar ./*
           cd ..
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4  # ✅ BURASI v4 OLARAK GÜNCELLENDİ
+        uses: actions/upload-artifact@v4
         with:
           name: Samsung-Patched-Firmware-Magisk26.3
           path: |
-            Patched_BL.tar            Patched_AP.tar
+            Patched_BL.tar
+            Patched_AP.tar
           retention-days: 1
