@@ -40,33 +40,76 @@ jobs:
         run: |
           echo "Setting up environment..."
           sudo apt-get update
-          sudo apt-get install -y lz4 unzip wget curl tar openssl qemu-user-static p7zip-full
+          sudo apt-get install -y lz4 unzip wget curl tar openssl qemu-user-static
           echo "✅ Environment ready"
 
       # ============================================================
-      # STEP 2: Download MagiskBoot (Magisk 26.3)
+      # STEP 2: Download MagiskBoot (Magisk 27.0 - FIXED) ✅
       # ============================================================
-      - name: 2️⃣ Download MagiskBoot
-        run: |
-          echo "::group::Step 2: Downloading MagiskBoot"
-          APK_URL="https://github.com/topjohnwu/Magisk/releases/download/v26.3/Magisk.v26.3.apk"
-          wget --no-verbose -O magisk.apk "${APK_URL}"
+      - name: 2️⃣ Download MagiskBoot (v27.0)
+        run: |          echo "::group::Step 2: Downloading MagiskBoot"
           
-          if [ -f magisk.apk ] && [ "$(stat -c%s magisk.apk)" -gt 1000000 ]; then
-            MB_PATH=$(unzip -l magisk.apk | grep "magiskboot.*\.so" | head -1 | awk '{print $4}')
-            mkdir -p temp_mb && unzip -o magisk.apk "${MB_PATH}" -d temp_mb
-            find temp_mb -name "*.so" -exec cp {} ./magiskboot \;
-            rm -rf temp_mb magisk.apk
-            chmod +x magiskboot
-            FT=$(file magiskboot)
-            if echo "$FT" | grep -q "AArch64\|ARM"; then
-              echo "MAGISKBOOT_CMD=qemu-aarch64-static ./magiskboot" >> $GITHUB_ENV
+          # FIXED URL - Magisk 27.0
+          APK_URL="https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk"
+          
+          echo "Downloading Magisk 27.0..."
+          echo "URL: ${APK_URL}"
+          
+          wget --no-verbose --tries=3 --timeout=30 -O magisk.apk "${APK_URL}"
+          
+          if [ -f magisk.apk ]; then
+            APK_SIZE=$(stat -c%s magisk.apk 2>/dev/null || echo "0")
+            echo "Downloaded size: ${APK_SIZE} bytes"
+            
+            if [ "$APK_SIZE" -gt 1000000 ]; then
+              echo "✅ Size OK"
+              
+              if unzip -t magisk.apk > /dev/null 2>&1; then
+                echo "✅ Valid APK"
+                
+                # Extract magiskboot
+                MB_PATH=$(unzip -l magisk.apk | grep "magiskboot.*\.so" | head -1 | awk '{print $4}')
+                
+                if [ -n "$MB_PATH" ]; then
+                  echo "Found: ${MB_PATH}"
+                  mkdir -p temp_mb
+                  unzip -o magisk.apk "${MB_PATH}" -d temp_mb
+                  find temp_mb -name "*.so" -exec cp {} ./magiskboot \;
+                  rm -rf temp_mb magisk.apk
+                  chmod +x magiskboot
+                  
+                  FT=$(file magiskboot)
+                  echo "File type: ${FT}"
+                  
+                  if echo "$FT" | grep -q "AArch64\|ARM"; then
+                    echo "MAGISKBOOT_CMD=qemu-aarch64-static ./magiskboot" >> $GITHUB_ENV
+                    echo "✅ ARM64 binary (QEMU)"
+                  else
+                    echo "MAGISKBOOT_CMD=./magiskboot" >> $GITHUB_ENV
+                    echo "✅ x86_64 binary (Native)"
+                  fi
+                  
+                  # Verify patch command
+                  if ./magiskboot 2>&1 | grep -q "patch"; then
+                    echo "✅ 'patch' command available!"
+                  else
+                    echo "⚠️ Warning: patch command may not exist"
+                  fi
+                  
+                  echo "✅ MagiskBoot ready"                else
+                  echo "❌ magiskboot.so not found in APK"
+                  exit 1
+                fi
+              else
+                echo "❌ Invalid APK"
+                exit 1
+              fi
             else
-              echo "MAGISKBOOT_CMD=./magiskboot" >> $GITHUB_ENV
+              echo "❌ File too small - download failed"
+              exit 1
             fi
-            echo "✅ MagiskBoot ready"
           else
-            echo "❌ Magisk download failed"
+            echo "❌ Download failed"
             exit 1
           fi
           echo "::endgroup::"
@@ -102,89 +145,75 @@ jobs:
           BIT_UI7=$(extract_bit "ui7_folder")
           BIT_UI8=$(extract_bit "ui8_folder")
           echo "OneUI 7 Bit: $BIT_UI7 | OneUI 8 Bit: $BIT_UI8"
-          [ "$BIT_UI7" != "$BIT_UI8" ] && [ "$BIT_UI7" != "UNKNOWN" ] && { echo "⚠️ Bit Mismatch!"; } || echo "✅ Bit match"
+          if [ "$BIT_UI7" != "$BIT_UI8" ] && [ "$BIT_UI7" != "UNKNOWN" ]; then            echo "⚠️ Bit Mismatch!"
+            echo "bit_status=MISMATCH" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Bit match"
+            echo "bit_status=MATCH" >> $GITHUB_OUTPUT
+          fi
           echo "bit_version=$BIT_UI8" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
       # ============================================================
-      # STEP 5: 🔥 BL SWAP (UI7 abl.elf.lz4 → UI8)
+      # STEP 5: BL Swap (OneUI 7 → OneUI 8)
       # ============================================================
-      - name: 5️⃣ BL Swap (OneUI 7 → OneUI 8)
+      - name: 5️⃣ BL Swap (abl.elf.lz4)
+        id: bl_swap
         run: |
-          echo "::group::Step 5: BL Swap (abl.elf.lz4)"
+          echo "::group::Step 5: BL Swap"
           mkdir -p output
           
-          # Find BL files
           BL_UI7=$(find ui7_folder -name "BL_*.tar.md5" | head -n 1)
           BL_UI8=$(find ui8_folder -name "BL_*.tar.md5" | head -n 1)
           
-          if [ -z "$BL_UI7" ] || [ -z "$BL_UI8" ]; then
-            echo "❌ BL files not found!"
-            exit 1
-          fi
+          [ -z "$BL_UI7" ] || [ -z "$BL_UI8" ] && { echo "❌ BL files not found!"; exit 1; }
           
           echo "OneUI 7 BL: $(basename "$BL_UI7")"
           echo "OneUI 8 BL: $(basename "$BL_UI8")"
           
-          # ===== Extract UI7 BL =====
-          echo ""
-          echo "📦 Extracting OneUI 7 BL..."
+          # Extract UI7 BL
           cp "$BL_UI7" BL_UI7.tar
           head -c -56 BL_UI7.tar > BL_UI7_clean.tar 2>/dev/null || cp BL_UI7.tar BL_UI7_clean.tar
           mv BL_UI7_clean.tar BL_UI7.tar
           tar -xf BL_UI7.tar --ignore-zeros 2>/dev/null || tar -xf BL_UI7.tar
           
-          # Check for abl.elf.lz4
           if [ -f "abl.elf.lz4" ]; then
-            echo "✅ Found abl.elf.lz4 in UI7 BL"
             cp abl.elf.lz4 abl.elf.lz4.ui7
             rm -f abl.elf.lz4
+            echo "✅ Found abl.elf.lz4"
           elif [ -f "abl.elf" ]; then
-            echo "✅ Found abl.elf in UI7 BL (uncompressed)"
             cp abl.elf abl.elf.ui7
             rm -f abl.elf
-          else
-            echo "⚠️ abl.elf.lz4 not found in UI7 BL!"
-            echo "Available files:"
-            ls -la *.elf* 2>/dev/null || echo "No .elf files"
-            # Continue without swap
+            echo "✅ Found abl.elf"
           fi
-          
-          # Clean up
           rm -f BL_UI7.tar *.md5
           
-          # ===== Extract UI8 BL =====
-          echo ""
-          echo "📦 Extracting OneUI 8 BL..."
+          # Extract UI8 BL
           cp "$BL_UI8" BL_UI8.tar
           head -c -56 BL_UI8.tar > BL_UI8_clean.tar 2>/dev/null || cp BL_UI8.tar BL_UI8_clean.tar
           mv BL_UI8_clean.tar BL_UI8.tar
           tar -xf BL_UI8.tar --ignore-zeros 2>/dev/null || tar -xf BL_UI8.tar
           
-          # ===== SWAP abl.elf.lz4 =====
-          echo ""
-          echo "🔄 Swapping abl.elf.lz4 (UI7 → UI8)..."
-          if [ -f "abl.elf.lz4.ui7" ]; then
+          # Swap          if [ -f "abl.elf.lz4.ui7" ]; then
             rm -f abl.elf.lz4
             cp abl.elf.lz4.ui7 abl.elf.lz4
-            echo "✅ Replaced abl.elf.lz4 with UI7 version"
+            echo "✅ Swapped abl.elf.lz4 (UI7 → UI8)"
+            echo "swap_status=SUCCESS" >> $GITHUB_OUTPUT
           elif [ -f "abl.elf.ui7" ]; then
             rm -f abl.elf
             cp abl.elf.ui7 abl.elf
-            echo "✅ Replaced abl.elf with UI7 version"
+            echo "✅ Swapped abl.elf (UI7 → UI8)"
+            echo "swap_status=SUCCESS" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ No UI7 abl file to swap, using original UI8"
+            echo "⚠️ No swap performed"
+            echo "swap_status=SKIPPED" >> $GITHUB_OUTPUT
           fi
           
-          # ===== Repack BL =====
-          echo ""
-          echo "📦 Repacking BL_Patched.tar..."
+          # Repack
           tar -cf BL_Patched.tar --format=ustar *
           MD5_HASH=$(md5sum BL_Patched.tar | awk '{print $1}')
           echo "$MD5_HASH  BL_Patched.tar" >> BL_Patched.tar
           mv BL_Patched.tar output/BL_Patched.tar
-          
-          # Cleanup
           rm -rf BL_UI8.tar abl.*.ui7
           
           echo "✅ BL Swap Complete"
@@ -194,6 +223,7 @@ jobs:
       # STEP 6: AP Patch (Magisk Root)
       # ============================================================
       - name: 6️⃣ Patch AP (Magisk Root)
+        id: ap_patch
         run: |
           echo "::group::Step 6: Patching AP"
           mkdir -p output
@@ -207,17 +237,13 @@ jobs:
           echo "Found AP: $(basename "$AP_FILE")"
           cp "$AP_FILE" AP_work.tar
           
-          # Remove MD5 footer
           [[ "$AP_FILE" == *.md5 ]] && { head -c -56 AP_work.tar > AP_clean.tar 2>/dev/null || cp AP_work.tar AP_clean.tar; mv AP_clean.tar AP_work.tar; }
           
-          # Extract AP
           tar -xf AP_work.tar --ignore-zeros 2>/dev/null || tar -xf AP_work.tar
           
-          # Find boot image
           BOOT_IMG=""
           if [ -f "init_boot.img" ]; then
-            BOOT_IMG="init_boot.img"
-          elif [ -f "boot.img" ]; then
+            BOOT_IMG="init_boot.img"          elif [ -f "boot.img" ]; then
             BOOT_IMG="boot.img"
           elif [ -f "boot.img.lz4" ]; then
             lz4 -d boot.img.lz4 boot.img
@@ -228,48 +254,100 @@ jobs:
           fi
           
           echo "Found: $BOOT_IMG"
-          
           [ "${{ inputs.keep_original }}" == "true" ] && cp "$BOOT_IMG" "output/Original_$BOOT_IMG"
           
-          # Patch with magiskboot
-          echo "Patching..."
+          echo "Patching with MagiskBoot..."
           $MAGISKBOOT_CMD patch "$BOOT_IMG"
+          
           [ -f "${BOOT_IMG}.patched" ] && mv "${BOOT_IMG}.patched" "$BOOT_IMG"
           [ -f "${BOOT_IMG}.magisk" ] && mv "${BOOT_IMG}.magisk" "$BOOT_IMG"
           
-          # Repack
           tar -cf AP_Patched.tar --format=ustar "$BOOT_IMG"
           MD5_HASH=$(md5sum AP_Patched.tar | awk '{print $1}')
           echo "$MD5_HASH  AP_Patched.tar" >> AP_Patched.tar
           mv AP_Patched.tar output/AP_Patched.tar
           
           echo "✅ AP Patch Complete"
+          echo "patch_status=SUCCESS" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
       # ============================================================
-      # STEP 7: Device Info
+      # STEP 7: Generate Detailed Report ✅
       # ============================================================
-      - name: 7️⃣ Generate Device Info
+      - name: 7️⃣ Generate Report
         run: |
-          cat > output/device_info.txt << EOF
-          ========================================
-          Samsung Firmware Patch Information
-          ========================================
-          Date: $(date)
-          Workflow Run ID: ${{ github.run_id }}
-          
-          Magisk Version: 26.3
-          Bit Version: ${{ steps.bit_check.outputs.bit_version }}
-          
-          🔐 BL Swap: OneUI 7 abl.elf.lz4 → OneUI 8
-          🔓 AP Root: MagiskBoot Patched
-          ========================================
-          ⚠️ Flash at your own risk!
-          ========================================
+          cat > output/REPORT.txt << EOF
+          ╔══════════════════════════════════════════════════════════╗
+          ║     SAMSUNG ONE UI 8 ROOT - PATCH REPORT                 ║
+          ╠══════════════════════════════════════════════════════════╣
+          ║  Generated: $(date)                                      ║
+          ║  Workflow Run: ${{ github.run_id }}                       ║
+          ╚══════════════════════════════════════════════════════════╝
+
+          🔧 WHAT WAS DONE:
+          ═══════════════════════════════════════════════════════════
+
+          1️⃣ BL SWAP (Bootloader Downgrade)
+          ───────────────────────────────────
+          • Source: OneUI 7 Firmware
+          • Target: OneUI 8 Firmware
+          • File: abl.elf.lz4
+          • Status: ${{ steps.bl_swap.outputs.swap_status }}
+          2️⃣ AP PATCH (Magisk Root)
+          ───────────────────────────────────
+          • Magisk Version: 27.0
+          • Boot Image: init_boot.img or boot.img
+          • Tool: MagiskBoot
+          • Status: ${{ steps.ap_patch.outputs.patch_status }}
+
+          3️⃣ SECURITY CHECKS
+          ───────────────────────────────────
+          • Bit Version: ${{ steps.bit_check.outputs.bit_version }}
+          • Bit Check: ${{ steps.bit_check.outputs.bit_status }}
+
+          📦 OUTPUT FILES:
+          ═══════════════════════════════════════════════════════════
+          • BL_Patched.tar  → Odin BL Slot
+          • AP_Patched.tar  → Odin AP Slot
+          • REPORT.txt      → This file
+          • device_info.txt → Quick info
+
+          ⚠️ FLASHING INSTRUCTIONS:
+          ═══════════════════════════════════════════════════════════
+          1. Boot to Download Mode (Vol- + Vol- + Power)
+          2. Open Odin3 on Windows
+          3. Load files:
+             - BL → BL_Patched.tar
+             - AP → AP_Patched.tar
+             - CP → Original CP_*.tar.md5
+             - CSC → HOME_CSC_*.tar.md5
+          4. Click Start
+          5. Wait for PASS!
+
+          ⚠️ WARNINGS:
+          ═══════════════════════════════════════════════════════════
+          • Knox will be tripped (0x1) - Warranty void
+          • Samsung Pay/Secure Folder will not work
+          • Backup your data before flashing
+          • Flash at your own risk!
+
+          ═══════════════════════════════════════════════════════════
+          Made with ❤️ by GitHub Actions
+          ═══════════════════════════════════════════════════════════
           EOF
+          
+          cat > output/device_info.txt << EOF
+          Samsung Patch Info
+          Date: $(date)
+          Magisk: 27.0
+          Bit: ${{ steps.bit_check.outputs.bit_version }}
+          BL Swap: ${{ steps.bl_swap.outputs.swap_status }}          AP Patch: ${{ steps.ap_patch.outputs.patch_status }}
+          EOF
+          
+          echo "✅ Report generated"
 
       # ============================================================
-      # STEP 8: Upload
+      # STEP 8: Upload Artifacts
       # ============================================================
       - name: 8️⃣ Upload Artifacts
         uses: actions/upload-artifact@v4
