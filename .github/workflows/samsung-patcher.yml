@@ -1,22 +1,23 @@
-name: OneUI Patcher Magisk26
+name: Samsung One UI 8 Root
 
 on:
   workflow_dispatch:
     inputs:
-      link_ui7:
-        description: 'OneUI 7 Direct Link (.zip)'
+      ui7_link:
+        description: 'OneUI 7 Firmware Direct Link (.zip)'
         required: true
         type: string
-      link_ui8:
-        description: 'OneUI 8 Direct Link (.zip)'
+      ui8_link:
+        description: 'OneUI 8 Firmware Direct Link (.zip)'
         required: true
         type: string
-      
+
 jobs:
-  build:
+  patch-firmware:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
       - name: Install Tools
         run: |
@@ -25,82 +26,97 @@ jobs:
 
       - name: Download & Extract
         run: |
-          echo "Downloading UI7..."
-          wget --no-check-certificate -O ui7.zip "${{ inputs.link_ui7 }}"
-          echo "Downloading UI8..."
-          wget --no-check-certificate -O ui8.zip "${{ inputs.link_ui8 }}"
+          echo "⬇️ İndiriliyor..."
+          wget --no-check-certificate -O ui7.zip "${{ inputs.ui7_link }}"
+          wget --no-check-certificate -O ui8.zip "${{ inputs.ui8_link }}"
           
-          mkdir -p u7 u8
-          unzip -q ui7.zip -d u7/
-          unzip -q ui8.zip -d u8/
+          mkdir -p d7 d8
+          unzip -q ui7.zip -d d7
+          unzip -q ui8.zip -d d8
           
-          BL7=$(find u7 -name "BL_*.tar*" | head -n 1)
-          BL8=$(find u8 -name "BL_*.tar*" | head -n 1)
-          AP8=$(find u8 -name "AP_*.tar*" | head -n 1)
+          B7=$(find d7 -name "BL_*.tar*" | head -n 1)
+          B8=$(find d8 -name "BL_*.tar*" | head -n 1)
+          A8=$(find d8 -name "AP_*.tar*" | head -n 1)
           
-          if [ -z "$BL7" ] || [ -z "$BL8" ] || [ -z "$AP8" ]; then
-            echo "HATA: Dosyalar bulunamadı! Linkleri kontrol et."
+          if [ -z "$B7" ] || [ -z "$B8" ] || [ -z "$A8" ]; then
+            echo "❌ HATA: BL veya AP dosyası bulunamadı! Linkleri kontrol et."
             exit 1
           fi
           
-          echo "BL7=$BL7" >> $GITHUB_ENV
-          echo "BL8=$BL8" >> $GITHUB_ENV
-          echo "AP8=$AP8" >> $GITHUB_ENV
+          echo "B7=$B7" >> $GITHUB_ENV
+          echo "B8=$B8" >> $GITHUB_ENV
+          echo "A8=$A8" >> $GITHUB_ENV
 
-      - name: Patch BL (Swap)        run: |
-          mkdir -p work_bl work_old
-          tar -xf "$BL8" -C work_bl/
-          tar -xf "$BL7" -C work_old/
+      - name: Step 1: BL Swap (OneUI 7 -> 8)        run: |
+          mkdir -p w_bl w_old
+          echo "🔄 BL dosyaları açılıyor..."
+          tar -xf "$B8" -C w_bl
+          tar -xf "$B7" -C w_old
           
-          if [ ! -f "work_old/abl.elf.lz4" ]; then
-            echo "HATA: abl.elf.lz4 bulunamadı!"
+          if [ ! -f "w_old/abl.elf.lz4" ]; then
+            echo "❌ HATA: abl.elf.lz4 bulunamadı!"
             exit 1
           fi
           
-          rm -f work_bl/abl.elf.lz4
-          cp work_old/abl.elf.lz4 work_bl/
+          echo "🛠️ abl.elf.lz4 değiştiriliyor..."
+          rm -f w_bl/abl.elf.lz4
+          cp w_old/abl.elf.lz4 w_bl/
           
-          cd work_bl
-          tar -cvf ../Patched_BL.tar ./*
+          echo "📦 BL paketleniyor..."
+          cd w_bl
+          tar -cvf ../BL_Patched.tar ./*
           cd ..
 
-      - name: Patch AP (Magisk)
+      - name: Step 2: AP Magisk Patch (v26.3)
         run: |
-          mkdir -p work_ap m_tools
-          tar -xf "$AP8" -C work_ap/
+          mkdir -p w_ap m_tools
+          echo "📦 AP açılıyor..."
+          tar -xf "$A8" -C w_ap
           
-          BOOT=$(find work_ap -name "boot.img" -o -name "init_boot.img" | head -n 1)
-          if [ -z "$BOOT" ]; then echo "Boot img bulunamadı"; exit 1; fi
+          BOOT=$(find w_ap -name "boot.img" -o -name "init_boot.img" | head -n 1)
+          if [ -z "$BOOT" ]; then echo "❌ Boot imajı bulunamadı!"; exit 1; fi
           
-          # MagiskBoot İndir
+          echo "⬇️ MagiskBoot indiriliyor..."
           wget -O m_tools/mb https://github.com/HuskyDG/magiskboot-builds/releases/download/latest/magiskboot_linux_x86_64
           chmod +x m_tools/mb
           
-          mkdir -p patch_tmp
-          cp "$BOOT" patch_tmp/boot.img
-          cd patch_tmp
+          mkdir -p tmp
+          cp "$BOOT" tmp/boot.img
+          cd tmp
           
+          echo "🔨 Patchleme başlıyor..."
           ../m_tools/mb unpack boot.img
-          if [ -f "ramdisk.cpio" ]; then
-            ../m_tools/mb cpio ramdisk.cpio "add 0750 init.rc $(curl -s https://raw.githubusercontent.com/topjohnwu/magisk/master/stub/magiskinit.rc)" "patch" "backup .sha1"
-          fi
-          ../m_tools/mb repack boot.img
           
+          if [ -f "ramdisk.cpio" ]; then
+            ../m_tools/mb cpio ramdisk.cpio \
+              "add 0750 init.rc $(curl -s https://raw.githubusercontent.com/topjohnwu/magisk/master/stub/magiskinit.rc)" \
+              "patch" \
+              "backup .sha1"
+          else
+            echo "⚠️ Ramdisk bulunamadı, sadece repack yapılacak."
+          fi
+          
+          ../m_tools/mb repack boot.img          
           if [ -f "boot_new.img" ]; then
-            mv boot_new.img ../work_ap/$(basename $BOOT)
+            mv boot_new.img ../w_ap/$(basename $BOOT)
+            echo "✅ AP başarıyla yamalandı."
+          else
+            echo "⚠️ Yeni imaj oluşmadı, orijinal korunuyor."
           fi
           cd ..
 
       - name: Repack AP
         run: |
-          cd work_ap
-          tar -cvf ../Patched_AP.tar ./*
+          cd w_ap
+          echo "📦 AP tekrar paketleniyor..."
+          tar -cvf ../AP_Patched.tar ./*
           cd ..
-      - name: Upload Result
+
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: Samsung-Fixed-Firmware
+          name: Samsung-OneUI8-Root-Files
           path: |
-            Patched_BL.tar
-            Patched_AP.tar
+            BL_Patched.tar
+            AP_Patched.tar
           retention-days: 1
