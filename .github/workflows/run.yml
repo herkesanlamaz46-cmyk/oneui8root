@@ -34,21 +34,25 @@ jobs:
       - name: 2️⃣ Download MagiskBoot (v27.0)
         run: |
           echo "::group::Step 2: Downloading MagiskBoot"
-          APK_URL="https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk"
           echo "Downloading Magisk 27.0..."
+          APK_URL="https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk"
           echo "URL: ${APK_URL}"
           wget --no-verbose --tries=3 --timeout=30 -O magisk.apk "${APK_URL}"
+          echo "Download complete"
           if [ ! -f magisk.apk ]; then
             echo "Download failed!"
             exit 1
           fi
+          echo "File exists"
           APK_SIZE=$(stat -c%s magisk.apk)
           echo "Downloaded size: ${APK_SIZE} bytes"
           if [ "$APK_SIZE" -lt 1000000 ]; then
-            echo "File too small!"
-            exit 1
-          fi          unzip -t magisk.apk > /dev/null 2>&1
-          if [ $? -ne 0 ]; then
+            echo "File too small!"            exit 1
+          fi
+          echo "Size OK"
+          unzip -t magisk.apk > /dev/null 2>&1
+          UNZIP_RESULT=$?
+          if [ "$UNZIP_RESULT" -ne 0 ]; then
             echo "Invalid APK!"
             exit 1
           fi
@@ -82,21 +86,23 @@ jobs:
           echo "::group::Step 3: Downloading Firmware"
           echo "Downloading OneUI 7..."
           wget --no-verbose -O ui7.zip "${{ inputs.ui7_link }}"
-          if [ $? -ne 0 ]; then
+          DL_RESULT=$?
+          if [ "$DL_RESULT" -ne 0 ]; then
             echo "UI7 Download Failed!"
             exit 1
           fi
           echo "OneUI 7 complete"
           echo "Downloading OneUI 8..."
           wget --no-verbose -O ui8.zip "${{ inputs.ui8_link }}"
-          if [ $? -ne 0 ]; then
-            echo "UI8 Download Failed!"
-            exit 1
+          DL_RESULT=$?
+          if [ "$DL_RESULT" -ne 0 ]; then
+            echo "UI8 Download Failed!"            exit 1
           fi
           echo "OneUI 8 complete"
           mkdir -p ui7_folder ui8_folder
           unzip -q -o ui7.zip -d ui7_folder
-          unzip -q -o ui8.zip -d ui8_folder          echo "Firmware extracted"
+          unzip -q -o ui8.zip -d ui8_folder
+          echo "Firmware extracted"
           echo "::endgroup::"
 
       - name: 4️⃣ Bit Version Check
@@ -104,20 +110,22 @@ jobs:
         continue-on-error: true
         run: |
           echo "::group::Step 4: Bit Version Check"
-          extract_bit() {
-            local folder="$1"
-            AP_FILE=$(find "$folder" -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n1)
-            if [ -z "$AP_FILE" ]; then
-              AP_FILE=$(find "$folder" -name "BL_*.tar.md5" | head -n1)
-            fi
-            if [ -z "$AP_FILE" ]; then
-              echo "UNKNOWN"
-              return 1
-            fi
-            basename "$AP_FILE" | grep -oP '(XXU|XSU|XXS|OXU)\K[0-9]' | head -n1 || echo "UNKNOWN"
-          }
-          BIT_UI7=$(extract_bit "ui7_folder")
-          BIT_UI8=$(extract_bit "ui8_folder")
+          AP_FILE=$(find ui7_folder -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n1)
+          if [ -z "$AP_FILE" ]; then
+            AP_FILE=$(find ui7_folder -name "BL_*.tar.md5" | head -n1)
+          fi
+          BIT_UI7=$(basename "$AP_FILE" | grep -oP '(XXU|XSU|XXS|OXU)\K[0-9]' | head -n1)
+          if [ -z "$BIT_UI7" ]; then
+            BIT_UI7="UNKNOWN"
+          fi
+          AP_FILE=$(find ui8_folder -name "AP_*.tar.md5" -o -name "AP_*.tar" | head -n1)
+          if [ -z "$AP_FILE" ]; then
+            AP_FILE=$(find ui8_folder -name "BL_*.tar.md5" | head -n1)
+          fi
+          BIT_UI8=$(basename "$AP_FILE" | grep -oP '(XXU|XSU|XXS|OXU)\K[0-9]' | head -n1)
+          if [ -z "$BIT_UI8" ]; then
+            BIT_UI8="UNKNOWN"
+          fi
           echo "OneUI 7 Bit: $BIT_UI7 | OneUI 8 Bit: $BIT_UI8"
           if [ "$BIT_UI7" != "$BIT_UI8" ] && [ "$BIT_UI7" != "UNKNOWN" ]; then
             echo "Bit Mismatch!"
@@ -137,15 +145,21 @@ jobs:
           BL_UI7=$(find ui7_folder -name "BL_*.tar.md5" | head -n 1)
           BL_UI8=$(find ui8_folder -name "BL_*.tar.md5" | head -n 1)
           if [ -z "$BL_UI7" ] || [ -z "$BL_UI8" ]; then
-            echo "BL files not found!"
-            exit 1
+            echo "BL files not found!"            exit 1
           fi
           echo "OneUI 7 BL: $(basename "$BL_UI7")"
           echo "OneUI 8 BL: $(basename "$BL_UI8")"
           cp "$BL_UI7" BL_UI7.tar
-          head -c -56 BL_UI7.tar > BL_UI7_clean.tar 2>/dev/null || cp BL_UI7.tar BL_UI7_clean.tar
+          head -c -56 BL_UI7.tar > BL_UI7_clean.tar 2>/dev/null
+          if [ $? -ne 0 ]; then
+            cp BL_UI7.tar BL_UI7_clean.tar
+          fi
           mv BL_UI7_clean.tar BL_UI7.tar
-          tar -xf BL_UI7.tar --ignore-zeros 2>/dev/null || tar -xf BL_UI7.tar          if [ -f "abl.elf.lz4" ]; then
+          tar -xf BL_UI7.tar --ignore-zeros 2>/dev/null
+          if [ $? -ne 0 ]; then
+            tar -xf BL_UI7.tar
+          fi
+          if [ -f "abl.elf.lz4" ]; then
             cp abl.elf.lz4 abl.elf.lz4.ui7
             rm -f abl.elf.lz4
             echo "Found abl.elf.lz4"
@@ -156,9 +170,15 @@ jobs:
           fi
           rm -f BL_UI7.tar *.md5
           cp "$BL_UI8" BL_UI8.tar
-          head -c -56 BL_UI8.tar > BL_UI8_clean.tar 2>/dev/null || cp BL_UI8.tar BL_UI8_clean.tar
+          head -c -56 BL_UI8.tar > BL_UI8_clean.tar 2>/dev/null
+          if [ $? -ne 0 ]; then
+            cp BL_UI8.tar BL_UI8_clean.tar
+          fi
           mv BL_UI8_clean.tar BL_UI8.tar
-          tar -xf BL_UI8.tar --ignore-zeros 2>/dev/null || tar -xf BL_UI8.tar
+          tar -xf BL_UI8.tar --ignore-zeros 2>/dev/null
+          if [ $? -ne 0 ]; then
+            tar -xf BL_UI8.tar
+          fi
           if [ -f "abl.elf.lz4.ui7" ]; then
             rm -f abl.elf.lz4
             cp abl.elf.lz4.ui7 abl.elf.lz4
@@ -174,8 +194,7 @@ jobs:
             echo "swap_status=SKIPPED" >> $GITHUB_OUTPUT
           fi
           tar -cf BL_Patched.tar --format=ustar *
-          MD5_HASH=$(md5sum BL_Patched.tar | awk '{print $1}')
-          echo "$MD5_HASH  BL_Patched.tar" >> BL_Patched.tar
+          MD5_HASH=$(md5sum BL_Patched.tar | awk '{print $1}')          echo "$MD5_HASH  BL_Patched.tar" >> BL_Patched.tar
           mv BL_Patched.tar output/BL_Patched.tar
           rm -rf BL_UI8.tar abl.*.ui7
           echo "BL Swap Complete"
@@ -194,17 +213,24 @@ jobs:
           AP_FILE=$(find ui8_folder -name "AP_*.tar.md5" | head -n 1)
           if [ -z "$AP_FILE" ]; then
             AP_FILE=$(find ui8_folder -name "AP_*.tar" | head -n 1)
-          fi          if [ -z "$AP_FILE" ]; then
+          fi
+          if [ -z "$AP_FILE" ]; then
             echo "AP not found!"
             exit 1
           fi
           echo "Found AP: $(basename "$AP_FILE")"
           cp "$AP_FILE" AP_work.tar
           if [[ "$AP_FILE" == *.md5 ]]; then
-            head -c -56 AP_work.tar > AP_clean.tar 2>/dev/null || cp AP_work.tar AP_clean.tar
+            head -c -56 AP_work.tar > AP_clean.tar 2>/dev/null
+            if [ $? -ne 0 ]; then
+              cp AP_work.tar AP_clean.tar
+            fi
             mv AP_clean.tar AP_work.tar
           fi
-          tar -xf AP_work.tar --ignore-zeros 2>/dev/null || tar -xf AP_work.tar
+          tar -xf AP_work.tar --ignore-zeros 2>/dev/null
+          if [ $? -ne 0 ]; then
+            tar -xf AP_work.tar
+          fi
           BOOT_IMG=""
           if [ -f "init_boot.img" ]; then
             BOOT_IMG="init_boot.img"
@@ -217,8 +243,7 @@ jobs:
           else
             echo "No boot image!"
             exit 1
-          fi
-          echo "Found: $BOOT_IMG"
+          fi          echo "Found: $BOOT_IMG"
           if [ "${{ inputs.keep_original }}" == "true" ]; then
             cp "$BOOT_IMG" "output/Original_$BOOT_IMG"
           fi
@@ -243,7 +268,8 @@ jobs:
           echo "Step 4: Repacking boot image..."
           $MAGISKBOOT_CMD repack "$BOOT_IMG"
           if [ -f "new-boot.img" ]; then
-            mv new-boot.img "$BOOT_IMG"            echo "Repacked to new-boot.img"
+            mv new-boot.img "$BOOT_IMG"
+            echo "Repacked to new-boot.img"
           elif [ -f "${BOOT_IMG}.patched" ]; then
             mv "${BOOT_IMG}.patched" "$BOOT_IMG"
             echo "Using .patched file"
@@ -266,8 +292,7 @@ jobs:
           ========================================
           Generated: $(date)
           Workflow Run: ${{ github.run_id }}
-          
-          WHAT WAS DONE:
+                    WHAT WAS DONE:
           ========================================
           1. BL SWAP: OneUI 7 -> OneUI 8 (abl.elf.lz4)
              Status: ${{ steps.bl_swap.outputs.swap_status }}
@@ -292,7 +317,8 @@ jobs:
           4. Click Start
           
           WARNINGS:
-          ========================================          - Knox will be tripped (0x1)
+          ========================================
+          - Knox will be tripped (0x1)
           - Warranty void
           - Backup your data!
           ========================================
