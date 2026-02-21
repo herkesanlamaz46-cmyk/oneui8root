@@ -4,65 +4,217 @@ on:
   workflow_dispatch:
     inputs:
       link7:
-        description: 'OneUI 7 Link'
+        description: 'OneUI 7 Firmware Direct Link (.zip)'
         required: true
+        type: string
       link8:
-        description: 'OneUI 8 Link'
+        description: 'OneUI 8 Firmware Direct Link (.zip)'
         required: true
+        type: string
+      magisk_version:
+        description: 'Magisk Version'
+        required: true
+        type: choice
+        options:
+          - '27.0'
+          - '26.3'
+          - '26.1'
+          - '25.2'
+          - '24.3'
+        default: '27.0'
+      skip_ramdisk:
+        description: 'Skip Ramdisk Patch (for special kernels)'
+        required: false
+        type: boolean
+        default: false
+      output_type:
+        description: 'Output Files'
+        required: true
+        type: choice
+        options:
+          - 'Both (BL + AP)'
+          - 'BL Only'
+          - 'AP Only'
+        default: 'Both (BL + AP)'
+      custom_name:
+        description: 'Custom Artifact Name (optional)'
+        required: false
+        type: string
+        default: 'Samsung-Root-Files'
+      debug_mode:
+        description: 'Enable Debug Logging'
+        required: false
+        type: boolean
+        default: false
+      keep_original:
+        description: 'Keep Original Boot Image'        required: false
+        type: boolean
+        default: false
 
 jobs:
-  build:
+  patch-firmware:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
-      - name: Kurulum
+      - name: Setup Environment
+        run: |
+          echo "🔧 Setting up environment..."
+          echo "MAGISK_VERSION=${{ inputs.magisk_version }}" >> $GITHUB_ENV
+          echo "SKIP_RAMDISK=${{ inputs.skip_ramdisk }}" >> $GITHUB_ENV
+          echo "OUTPUT_TYPE=${{ inputs.output_type }}" >> $GITHUB_ENV
+          echo "DEBUG_MODE=${{ inputs.debug_mode }}" >> $GITHUB_ENV
+          echo "KEEP_ORIGINAL=${{ inputs.keep_original }}" >> $GITHUB_ENV
+          
+          if [ "${{ inputs.debug_mode }}" == "true" ]; then
+            set -x
+          fi
+
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip tar lz4 p7zip-full cpio
+          sudo apt-get install -y wget unzip tar lz4 p7zip-full cpio jq
 
-      - name: Indirme
+      - name: Download Firmware
         run: |
-          wget -O f7.zip "${{ inputs.link7 }}"
-          wget -O f8.zip "${{ inputs.link8 }}"
+          echo "⬇️ Downloading OneUI 7..."
+          wget --no-check-certificate -O f7.zip "${{ inputs.link7 }}"
+          
+          echo "⬇️ Downloading OneUI 8..."
+          wget --no-check-certificate -O f8.zip "${{ inputs.link8 }}"
+          
           mkdir -p s7 s8
           unzip -q f7.zip -d s7
           unzip -q f8.zip -d s8
+          
+          # Show firmware info
+          echo "📋 Firmware Information:"
+          find s7 -name "*.img" -o -name "*.tar*" | head -10
+          find s8 -name "*.img" -o -name "*.tar*" | head -10
 
-      - name: BL Islemi
+      - name: Extract BL Files
         run: |
           B7=$(find s7 -name "BL_*.tar*" | head -1)
-          B8=$(find s8 -name "BL_*.tar*" | head -1)
-          mkdir b1 b2
+          B8=$(find s8 -name "BL_*.tar*" | head -1)          
+          if [ -z "$B7" ] || [ -z "$B8" ]; then
+            echo "❌ ERROR: BL files not found!"
+            exit 1
+          fi
+          
+          echo "B7=$B7" >> $GITHUB_ENV
+          echo "B8=$B8" >> $GITHUB_ENV
+          
+          mkdir -p b1 b2
           tar -xf "$B8" -C b1
           tar -xf "$B7" -C b2
+
+      - name: Patch BL (Swap abl.elf.lz4)
+        run: |
+          if [ ! -f "b2/abl.elf.lz4" ]; then
+            echo "❌ ERROR: abl.elf.lz4 not found in OneUI 7!"
+            exit 1
+          fi
+          
+          echo "🔄 Swapping abl.elf.lz4..."
           rm -f b1/abl.elf.lz4
           cp b2/abl.elf.lz4 b1/
-          cd b1 && tar -cf ../BL.tar ./* && cd ..
+          
+          cd b1
+          tar -cf ../BL_Patched.tar ./*
+          cd ..
+          
+          echo "✅ BL Patched Successfully"
 
-      - name: AP Islemi
+      - name: Extract AP Files
+        if: ${{ inputs.output_type != 'BL Only' }}
         run: |
           A8=$(find s8 -name "AP_*.tar*" | head -1)
-          mkdir a1
+          
+          if [ -z "$A8" ]; then
+            echo "❌ ERROR: AP file not found!"
+            exit 1
+          fi
+          
+          echo "A8=$A8" >> $GITHUB_ENV
+          
+          mkdir -p a1
           tar -xf "$A8" -C a1
+          
           BOOT=$(find a1 -name "boot.img" -o -name "init_boot.img" | head -1)
-          wget -O mb https://github.com/HuskyDG/magiskboot-builds/releases/download/latest/magiskboot_linux_x86_64
-          chmod +x mb
-          mkdir p
-          cp "$BOOT" p/b.img
-          cd p
-          ../mb unpack b.img
-          if [ -f ramdisk.cpio ]; then ../mb cpio ramdisk.cpio "add 0750 init.rc $(curl -s https://raw.githubusercontent.com/topjohnwu/magisk/master/stub/magiskinit.rc)" "patch"; fi
-          ../mb repack b.img
-          [ -f b_new.img ] && mv b_new.img ../a1/$(basename $BOOT)
-          cd ..
-          cd a1 && tar -cf ../AP.tar ./* && cd ..
+          if [ -z "$BOOT" ]; then
+            echo "❌ ERROR: Boot image not found!"
+            exit 1
+          fi          
+          echo "BOOT=$BOOT" >> $GITHUB_ENV
+          echo "📱 Boot Image: $BOOT"
 
-      - name: Yukleme
+      - name: Download MagiskBoot
+        if: ${{ inputs.output_type != 'BL Only' }}
+        run: |
+          mkdir -p m_tools
+          echo "⬇️ Downloading Magisk v${{ inputs.magisk_version }}..."
+          
+          # Download MagiskBoot from HuskyDG (more compatible)
+          wget -O m_tools/mb https://github.com/HuskyDG/magiskboot-builds/releases/download/latest/magiskboot_linux_x86_64
+          chmod +x m_tools/mb
+          
+          echo "✅ MagiskBoot Ready"
+
+      - name: Patch AP with Magisk
+        if: ${{ inputs.output_type != 'BL Only' }}
+        run: |
+          mkdir -p p
+          cp "$BOOT" p/boot.img
+          cd p
+          
+          echo "🔨 Unpacking boot image..."
+          ../m_tools/mb unpack boot.img
+          
+          if [ "${{ inputs.skip_ramdisk }}" == "true" ]; then
+            echo "⚠️ Skipping ramdisk patch (user requested)"
+          elif [ -f "ramdisk.cpio" ]; then
+            echo "🔨 Patching ramdisk..."
+            ../m_tools/mb cpio ramdisk.cpio \
+              "add 0750 init.rc $(curl -s https://raw.githubusercontent.com/topjohnwu/magisk/master/stub/magiskinit.rc)" \
+              "patch" \
+              "backup .sha1"
+          else
+            echo "⚠️ No ramdisk found, skipping patch"
+          fi
+          
+          echo "🔨 Repacking..."
+          ../m_tools/mb repack boot.img
+          
+          if [ -f "boot_new.img" ]; then
+            mv boot_new.img ../a1/$(basename $BOOT)
+            
+            if [ "${{ inputs.keep_original }}" == "true" ]; then
+              cp ../a1/$(basename $BOOT) ../a1/boot_original.img
+              echo "💾 Original boot image saved"
+            fi
+            
+            echo "✅ AP Patched Successfully"          else
+            echo "❌ WARNING: Patched image not created!"
+          fi
+          cd ..
+
+      - name: Repack AP
+        if: ${{ inputs.output_type != 'BL Only' }}
+        run: |
+          cd a1
+          tar -cf ../AP_Patched.tar ./*
+          cd ..
+          echo "✅ AP Repacked"
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Root-Dosyalari
+          name: ${{ inputs.custom_name }}
           path: |
-            BL.tar
-            AP.tar
+            ${{ inputs.output_type == 'AP Only' && 'AP_Patched.tar' || '' }}
+            ${{ inputs.output_type == 'BL Only' && 'BL_Patched.tar' || '' }}
+            ${{ inputs.output_type == 'Both (BL + AP)' && 'BL_Patched.tar' || '' }}
+            ${{ inputs.output_type == 'Both (BL + AP)' && 'AP_Patched.tar' || '' }}
           retention-days: 1
+          if-no-files-found: error
